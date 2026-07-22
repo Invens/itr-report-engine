@@ -1,12 +1,12 @@
 # ITR Report Engine
 
-Production-oriented monorepo for uploading Indian ITR acknowledgement PDFs, extracting structured data with DeepSeek, validating the extracted fields, separating taxpayers by PAN, and generating individual verification reports in Microsoft Word format.
+Production-oriented monorepo for uploading Indian ITR acknowledgement PDFs, extracting structured data with DeepSeek, validating extracted fields, separating taxpayers by PAN, and generating individual verification reports in Microsoft Word format.
 
 ## Stack
 
 - Next.js 16 standalone dashboard
 - Fastify 5 API
-- DeepSeek JSON extraction
+- DeepSeek structured JSON extraction
 - PostgreSQL 16 with Prisma migrations
 - Redis 7
 - Shared Zod contracts
@@ -21,18 +21,27 @@ apps/
   web/          Next.js dashboard
 packages/
   contracts/    Shared schemas and types
-  database/     Prisma schema and migrations
+  database/     Prisma package, schema and migrations
+start.sh        Secure one-command Docker launcher
 ```
 
 ## Start the complete application
 
-The entire stack runs through Docker. No local Node.js, pnpm, PostgreSQL or Redis installation is required.
+The complete stack runs through Docker. Local Node.js, pnpm, PostgreSQL and Redis installations are not required.
 
 ### One-command start
 
 ```bash
-DEEPSEEK_API_KEY="your-key" docker compose up --build -d
+DEEPSEEK_API_KEY="your-key" sh ./start.sh
 ```
+
+The launcher:
+
+1. checks Docker and Docker Compose;
+2. creates `.env` from `.env.example` when needed;
+3. generates a strong PostgreSQL password and stores it only in the ignored `.env` file;
+4. validates that a DeepSeek key is available;
+5. builds and starts the complete application.
 
 Open:
 
@@ -40,17 +49,17 @@ Open:
 http://localhost:3000
 ```
 
-For repeatable starts, copy `.env.example` to `.env`, add the DeepSeek key once, and then use:
+After the first start, the key may be stored in `.env`, allowing subsequent starts with:
 
 ```bash
-docker compose up --build -d
+sh ./start.sh
 ```
 
-The command starts and coordinates:
+The stack starts and coordinates:
 
 1. PostgreSQL
 2. Redis
-3. Database migration job
+3. Prisma migration job
 4. Fastify API
 5. Next.js web application
 
@@ -60,16 +69,16 @@ The web service is the only service exposed publicly. PostgreSQL, Redis and the 
 
 ```bash
 # Follow application logs
-docker compose logs -f web api
+docker compose --env-file .env logs -f web api
 
 # Check container health
-docker compose ps
+docker compose --env-file .env ps
 
 # Stop without deleting stored data
-docker compose down
+docker compose --env-file .env down
 
 # Stop and delete all local database/document data
-docker compose down -v
+docker compose --env-file .env down -v
 ```
 
 Persistent Docker volumes are used for:
@@ -123,4 +132,4 @@ Browser traffic uses the same-origin `/backend/*` proxy, so no public API port o
 
 ## Production notes
 
-Change `POSTGRES_PASSWORD`, keep `.env` outside version control, deploy behind HTTPS, and restrict access to trusted staff. Authentication, OCR, company/GST/ROC report sections, antivirus scanning and object-storage integration remain separate hardening milestones before exposing the system to external users.
+Keep `.env` outside version control, deploy behind HTTPS, and restrict access to trusted staff. Authentication, OCR, company/GST/ROC report sections, antivirus scanning and object-storage integration remain separate hardening milestones before exposing the system to external users.
