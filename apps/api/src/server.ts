@@ -22,6 +22,21 @@ type ExtractionResponseItem = {
   requiresReview: boolean;
 };
 
+function resolveHttpError(error: unknown) {
+  const message = error instanceof Error ? error.message : 'Unknown error';
+
+  if (typeof error !== 'object' || error === null || !('statusCode' in error)) {
+    return { statusCode: 500, message };
+  }
+
+  const candidate = (error as { statusCode?: unknown }).statusCode;
+  const statusCode = typeof candidate === 'number' && candidate >= 400 && candidate <= 599
+    ? candidate
+    : 500;
+
+  return { statusCode, message };
+}
+
 const app = Fastify({
   logger: {
     level: env.NODE_ENV === 'production' ? 'info' : 'debug',
@@ -109,9 +124,10 @@ app.get('/v1/reports/download', async (request, reply) => {
 
 app.setErrorHandler((error, request, reply) => {
   request.log.error({ err: error }, 'request failed');
-  const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
-  reply.code(status).send({
-    error: status === 500 ? 'Internal server error' : error.message,
+  const resolved = resolveHttpError(error);
+
+  reply.code(resolved.statusCode).send({
+    error: resolved.statusCode === 500 ? 'Internal server error' : resolved.message,
     requestId: request.id
   });
 });
