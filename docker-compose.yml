@@ -4,7 +4,7 @@ x-api-environment: &api-environment
   NODE_ENV: production
   PORT: 4000
   WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3000}}
-  DATABASE_URL: postgresql://${POSTGRES_USER:-itr}:${POSTGRES_PASSWORD:-itr_local_only}@postgres:5432/${POSTGRES_DB:-itr}?schema=public
+  DATABASE_URL: postgresql://${POSTGRES_USER:-itr}:${POSTGRES_PASSWORD:?Run sh ./start.sh or set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-itr}?schema=public
   REDIS_URL: redis://redis:6379
   DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY in .env or your shell}
   DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
@@ -19,7 +19,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-itr}
       POSTGRES_USER: ${POSTGRES_USER:-itr}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-itr_local_only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run sh ./start.sh or set POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     expose:
