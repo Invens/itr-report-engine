@@ -12,9 +12,9 @@
     "db:migrate": "pnpm --filter @itr/database migrate:deploy",
     "db:dev": "pnpm --filter @itr/database migrate:dev",
     "db:validate": "pnpm --filter @itr/database validate",
-    "docker:up": "docker compose up --build -d",
-    "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f web api"
+    "docker:up": "sh ./start.sh",
+    "docker:down": "docker compose --env-file .env down",
+    "docker:logs": "docker compose --env-file .env logs -f web api"
   },
   "devDependencies": {
     "@types/node": "^24.1.0",
