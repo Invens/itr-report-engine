@@ -29,7 +29,23 @@ jobs:
       - name: Validate database package
         run: pnpm --filter @itr/database typecheck
       - name: Typecheck API
-        run: pnpm --filter @itr/api typecheck
+        id: api_typecheck
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter @itr/api typecheck 2>&1 | tee api-typecheck.log
+      - name: Upload API typecheck diagnostics
+        if: steps.api_typecheck.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-typecheck-log
+          path: api-typecheck.log
+          if-no-files-found: error
+          retention-days: 3
+      - name: Fail on API typecheck errors
+        if: steps.api_typecheck.outcome == 'failure'
+        run: exit 1
       - name: Typecheck web
         run: pnpm --filter @itr/web typecheck
       - name: Build API
