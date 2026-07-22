@@ -15,6 +15,8 @@ COPY packages/database/package.json packages/database/package.json
 RUN pnpm install --no-frozen-lockfile
 
 FROM dependencies AS api-builder
+ARG DATABASE_URL=postgresql://itr:itr@localhost:5432/itr?schema=public
+ENV DATABASE_URL=$DATABASE_URL
 COPY . .
 RUN pnpm db:generate \
  && pnpm --filter @itr/contracts build \
