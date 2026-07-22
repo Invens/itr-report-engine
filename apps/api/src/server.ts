@@ -3,7 +3,8 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import { randomUUID } from 'node:crypto';
-import { extname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { basename, extname, resolve, sep } from 'node:path';
 import { env } from './config.js';
 import { persistUpload, extractPdfText } from './document-service.js';
 import { extractItrWithDeepSeek } from './deepseek.js';
@@ -21,7 +22,7 @@ const app = Fastify({
   bodyLimit: env.MAX_UPLOAD_MB * 1024 * 1024
 });
 
-await app.register(helmet);
+await app.register(helmet, { crossOriginResourcePolicy: { policy: 'same-site' } });
 await app.register(cors, { origin: env.WEB_URL, credentials: true });
 await app.register(multipart, {
   limits: { files: 20, fileSize: env.MAX_UPLOAD_MB * 1024 * 1024 },
@@ -29,6 +30,7 @@ await app.register(multipart, {
 });
 
 app.get('/health', async () => ({ status: 'ok', service: 'itr-api', timestamp: new Date().toISOString() }));
+app.get('/ready', async () => ({ status: 'ready', service: 'itr-api' }));
 
 app.post('/v1/documents/extract', async (request, reply) => {
   const parts = request.files();
@@ -56,6 +58,27 @@ app.post('/v1/reports/individual', async (request, reply) => {
   if (!parsed.success) return reply.code(422).send({ error: 'Invalid report payload', details: parsed.error.flatten() });
   const outputKey = await generateIndividualReport(parsed.data);
   return reply.code(201).send({ outputKey });
+});
+
+app.get('/v1/reports/download', async (request, reply) => {
+  const query = request.query as { key?: string };
+  if (!query.key) return reply.code(400).send({ error: 'Report key is required' });
+
+  const storageRoot = resolve(env.STORAGE_DIR);
+  const filePath = resolve(storageRoot, query.key);
+  if (!filePath.startsWith(`${storageRoot}${sep}`) || extname(filePath).toLowerCase() !== '.docx') {
+    return reply.code(400).send({ error: 'Invalid report key' });
+  }
+
+  try {
+    const file = await readFile(filePath);
+    return reply
+      .header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+      .header('Content-Disposition', `attachment; filename="${basename(filePath)}"`)
+      .send(file);
+  } catch {
+    return reply.code(404).send({ error: 'Report not found' });
+  }
 });
 
 app.setErrorHandler((error, request, reply) => {
