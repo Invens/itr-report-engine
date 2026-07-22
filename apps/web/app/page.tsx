@@ -19,7 +19,7 @@ type ExtractionResult = {
   issues: Array<{ field: string; severity: string; message: string }>;
 };
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+const apiUrl = '/backend';
 
 export default function HomePage() {
   const [files, setFiles] = useState<File[]>([]);
@@ -53,6 +53,7 @@ export default function HomePage() {
   }
 
   async function generate(items: ExtractionResult[]) {
+    setError('');
     const first = items[0].extraction;
     const payload = {
       clientName: first.name,
@@ -73,7 +74,7 @@ export default function HomePage() {
     });
     const body = await response.json();
     if (!response.ok) setError(body.error ?? 'Report generation failed');
-    else alert(`Report generated: ${body.outputKey}`);
+    else window.location.assign(`${apiUrl}/v1/reports/download?key=${encodeURIComponent(body.outputKey)}`);
   }
 
   return (
