@@ -39,5 +39,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm db:generate
+      - run: pnpm db:migrate
       - run: pnpm typecheck
       - run: pnpm build
+      - name: Validate Docker Compose
+        run: docker compose config
+      - name: Build production images
+        run: docker compose build api web
