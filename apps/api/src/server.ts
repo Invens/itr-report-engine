@@ -55,7 +55,7 @@ await app.register(multipart, {
 });
 
 app.get('/health', async () => ({ status: 'ok', service: 'itr-api', timestamp: new Date().toISOString() }));
-app.get('/ready', async () => ({ status: 'ready', service: 'itr-api' }));
+app.get('/ready', { logLevel: 'silent' }, async () => ({ status: 'ready', service: 'itr-api' }));
 
 app.post('/v1/documents/extract', async (request, reply) => {
   const parts = request.files();
