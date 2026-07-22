@@ -11,6 +11,7 @@ COPY package.json pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/database/package.json packages/database/package.json
 RUN pnpm install --no-frozen-lockfile
 
 FROM dependencies AS api-builder
