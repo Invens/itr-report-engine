@@ -36,11 +36,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm db:generate
-      - run: pnpm db:migrate
-      - run: pnpm typecheck
-      - run: pnpm build
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: Generate Prisma Client
+        run: pnpm db:generate
+      - name: Apply database migrations
+        run: pnpm db:migrate
+      - name: Build shared contracts
+        run: pnpm --filter @itr/contracts build
+      - name: Validate database package
+        run: pnpm --filter @itr/database typecheck
+      - name: Typecheck API
+        run: pnpm --filter @itr/api typecheck
+      - name: Typecheck web
+        run: pnpm --filter @itr/web typecheck
+      - name: Build API
+        run: pnpm --filter @itr/api build
+      - name: Build web
+        run: pnpm --filter @itr/web build
       - name: Validate Docker Compose
         run: docker compose config
       - name: Build production images
