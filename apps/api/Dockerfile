@@ -31,4 +31,4 @@ RUN mkdir -p /app/storage/uploads /app/storage/reports \
 USER node
 EXPOSE 4000
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["pnpm", "--filter", "@itr/api", "start"]
+CMD ["node", "apps/api/dist/server.js"]
