@@ -60,7 +60,13 @@ services:
       dockerfile: apps/api/Dockerfile
       target: api-runtime
     environment: *api-environment
-    command: ["pnpm", "db:migrate"]
+    command:
+      - node
+      - node_modules/prisma/build/index.js
+      - migrate
+      - deploy
+      - --schema
+      - packages/database/prisma/schema.prisma
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,7 +80,6 @@ services:
       dockerfile: apps/api/Dockerfile
       target: api-runtime
     restart: unless-stopped
-    init: true
     environment: *api-environment
     volumes:
       - document_storage:/app/storage
@@ -104,7 +109,6 @@ services:
       args:
         INTERNAL_API_URL: http://api:4000
     restart: unless-stopped
-    init: true
     environment:
       NODE_ENV: production
       PORT: 3000
