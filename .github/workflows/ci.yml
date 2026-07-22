@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -43,6 +47,29 @@ jobs:
           path: api-typecheck.log
           if-no-files-found: error
           retention-days: 3
+      - name: Publish API typecheck diagnostics
+        if: steps.api_typecheck.outcome == 'failure' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- api-typecheck-diagnostics -->';
+            const log = fs.readFileSync('api-typecheck.log', 'utf8').slice(0, 60000);
+            const body = `${marker}\n### API typecheck diagnostics\n\n\`\`\`text\n${log}\n\`\`\``;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
       - name: Fail on API typecheck errors
         if: steps.api_typecheck.outcome == 'failure'
         run: exit 1
