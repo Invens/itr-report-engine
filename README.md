@@ -65,6 +65,14 @@ The stack starts and coordinates:
 
 The web service is the only service exposed publicly. PostgreSQL, Redis and the API remain on the private Compose network.
 
+## Updating an existing checkout
+
+```bash
+git pull
+docker compose down --remove-orphans
+DEEPSEEK_API_KEY="your-new-key" sh ./start.sh
+```
+
 ## Operations
 
 ```bash
