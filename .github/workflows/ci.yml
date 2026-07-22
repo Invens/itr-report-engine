@@ -13,7 +13,7 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: postgresql://itr:itr@localhost:5432/itr
+      DATABASE_URL: postgresql://itr:ci-only@localhost:5432/itr
       REDIS_URL: redis://localhost:6379
       DEEPSEEK_API_KEY: test-key
     steps:
@@ -70,6 +70,25 @@ jobs:
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
+      - name: Resolve API typecheck diagnostics
+        if: steps.api_typecheck.outcome == 'success' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- api-typecheck-diagnostics -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              const body = `${marker}\n### API typecheck diagnostics\n\n✅ Passing on commit \`${context.sha.slice(0, 7)}\`.`;
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            }
       - name: Fail on API typecheck errors
         if: steps.api_typecheck.outcome == 'failure'
         run: exit 1
@@ -88,7 +107,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: itr
-          POSTGRES_PASSWORD: itr
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}
           POSTGRES_DB: itr
         ports: [5432:5432]
         options: >-
@@ -97,7 +116,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql://itr:itr@localhost:5432/itr
+      DATABASE_URL: postgresql://itr:ci-${{ github.run_id }}@localhost:5432/itr
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -116,6 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEEPSEEK_API_KEY: test-key
+      POSTGRES_PASSWORD: ci-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate Docker Compose
