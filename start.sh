@@ -62,8 +62,11 @@ fi
 
 docker compose --env-file "$ENV_FILE" up --build -d
 
+app_port="$(read_env APP_PORT)"
+app_port="${app_port:-3000}"
+
 echo ""
 echo "ITR Report Engine is starting."
-echo "Dashboard: http://localhost:$(read_env APP_PORT || true)"
+echo "Dashboard: http://localhost:$app_port"
 echo "Status: docker compose --env-file $ENV_FILE ps"
 echo "Logs:   docker compose --env-file $ENV_FILE logs -f web api"
