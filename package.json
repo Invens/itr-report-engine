@@ -1,0 +1,20 @@
+{
+  "name": "itr-report-engine",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @itr/web --filter @itr/api dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "db:generate": "prisma generate --schema packages/database/prisma/schema.prisma",
+    "db:migrate": "prisma migrate deploy --schema packages/database/prisma/schema.prisma",
+    "db:dev": "prisma migrate dev --schema packages/database/prisma/schema.prisma"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "prisma": "7.9.0",
+    "typescript": "^5.9.2"
+  }
+}
