@@ -7,21 +7,48 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum UserRole { ADMIN REVIEWER OPERATOR }
-enum EntityType { INDIVIDUAL COMPANY }
-enum DocumentStatus { UPLOADED QUEUED PROCESSING NEEDS_REVIEW VERIFIED FAILED }
-enum ReportStatus { DRAFT APPROVED GENERATED FAILED }
+enum UserRole {
+  ADMIN
+  REVIEWER
+  OPERATOR
+}
 
-enum FilingType { ORIGINAL REVISED UPDATED UNKNOWN }
+enum EntityType {
+  INDIVIDUAL
+  COMPANY
+}
+
+enum DocumentStatus {
+  UPLOADED
+  QUEUED
+  PROCESSING
+  NEEDS_REVIEW
+  VERIFIED
+  FAILED
+}
+
+enum ReportStatus {
+  DRAFT
+  APPROVED
+  GENERATED
+  FAILED
+}
+
+enum FilingType {
+  ORIGINAL
+  REVISED
+  UPDATED
+  UNKNOWN
+}
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String     @id @default(cuid())
+  email        String     @unique
   passwordHash String
   name         String
-  role         UserRole @default(OPERATOR)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         UserRole   @default(OPERATOR)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
   auditLogs    AuditLog[]
 }
 
@@ -36,6 +63,7 @@ model ClientEntity {
   updatedAt  DateTime    @updatedAt
   documents  Document[]
   reports    Report[]
+
   @@index([pan])
   @@index([gstin])
   @@index([cin])
@@ -53,9 +81,9 @@ model Document {
   acknowledgement String?
   filingDate      DateTime?
   filingType      FilingType     @default(UNKNOWN)
-  totalIncome     Decimal?       @db.Decimal(18,2)
-  taxPayable      Decimal?       @db.Decimal(18,2)
-  taxesPaid       Decimal?       @db.Decimal(18,2)
+  totalIncome     Decimal?       @db.Decimal(18, 2)
+  taxPayable      Decimal?       @db.Decimal(18, 2)
+  taxesPaid       Decimal?       @db.Decimal(18, 2)
   extractedJson   Json?
   confidenceJson  Json?
   validationJson  Json?
@@ -64,6 +92,7 @@ model Document {
   clientEntity    ClientEntity?  @relation(fields: [clientEntityId], references: [id])
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
+
   @@index([assessmentYear])
   @@index([acknowledgement])
 }
@@ -93,5 +122,6 @@ model AuditLog {
   after      Json?
   ipAddress  String?
   createdAt  DateTime @default(now())
+
   @@index([entityType, entityId])
 }
