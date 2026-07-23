@@ -32,6 +32,8 @@ jobs:
         run: pnpm --filter @itr/contracts build
       - name: Validate database package
         run: pnpm --filter @itr/database typecheck
+      - name: Build database package
+        run: pnpm --filter @itr/database build
       - name: Typecheck API
         id: api_typecheck
         continue-on-error: true
@@ -138,7 +140,7 @@ jobs:
       POSTGRES_PASSWORD: ci-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate Docker Compose
+      - name: Validate local Docker Compose
         run: docker compose config
       - name: Build production images
         run: docker compose build api web
