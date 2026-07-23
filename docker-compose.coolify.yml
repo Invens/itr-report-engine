@@ -58,7 +58,7 @@ services:
     environment: *api-environment
     command:
       - node
-      - node_modules/prisma/build/index.js
+      - packages/database/node_modules/prisma/build/index.js
       - migrate
       - deploy
       - --schema
