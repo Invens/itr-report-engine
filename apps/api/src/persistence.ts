@@ -4,7 +4,7 @@ import {
   FilingType,
   Prisma,
   ReportStatus
-} from '@prisma/client';
+} from '@itr/database';
 import {
   reportTemplateConfigSchema,
   type IndividualReport,
