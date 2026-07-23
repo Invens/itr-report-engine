@@ -1,7 +1,7 @@
 x-api-environment: &api-environment
   NODE_ENV: production
   PORT: 4000
-  WEB_URL: ${SERVICE_URL_WEB_3000}
+  WEB_URL: ${WEB_URL:-http://web:3000}
   DATABASE_URL: postgresql://${POSTGRES_USER:-itr}:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/${POSTGRES_DB:-itr}?schema=public
   REDIS_URL: redis://:${SERVICE_PASSWORD_REDIS}@redis:6379
   DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DeepSeek API key is required}
@@ -56,7 +56,13 @@ services:
       dockerfile: apps/api/Dockerfile
       target: api-runtime
     environment: *api-environment
-    command: ["./node_modules/.bin/prisma", "migrate", "deploy", "--schema", "packages/database/prisma/schema.prisma"]
+    command:
+      - node
+      - node_modules/prisma/build/index.js
+      - migrate
+      - deploy
+      - --schema
+      - packages/database/prisma/schema.prisma
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,7 +107,6 @@ services:
       PORT: 3000
       HOSTNAME: 0.0.0.0
       INTERNAL_API_URL: http://api:4000
-      SERVICE_URL_WEB_3000: ${SERVICE_URL_WEB_3000}
     expose:
       - "3000"
     depends_on:
