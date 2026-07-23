@@ -39,17 +39,36 @@ export const reportRowSchema = z.object({
   totalTaxesPaid: z.number().nonnegative()
 });
 
+export const reportTemplateConfigSchema = z.object({
+  bankName: z.string().min(1).default('____________________ Bank'),
+  branchName: z.string().min(1).default('____________________ Branch'),
+  address: z.string().min(1).default('____________________'),
+  udin: z.string().min(1).default('____________________'),
+  reference: z.string().min(1).default('SBA/2026-27/________/_____'),
+  firmName: z.string().min(1).default('Singhi Bikash & Associates'),
+  firmDescription: z.string().min(1).default('Chartered Accountants'),
+  firmRegistration: z.string().min(1).default('Firm Regd. No. 020937N'),
+  signerName: z.string().min(1).default('CA BIKASH SINGHI (B. Com, FCA, IP)'),
+  signerDesignation: z.string().min(1).default('Partner'),
+  membershipNumber: z.string().min(1).default('M. No: 098836')
+});
+
+export const reportTemplateUpdateSchema = z.object({
+  name: z.string().min(2).max(120),
+  description: z.string().max(500).default(''),
+  isActive: z.boolean().default(true),
+  config: reportTemplateConfigSchema
+});
+
 export const individualReportSchema = z.object({
   clientName: z.string(),
   pan: z.string(),
-  bankName: z.string().default('____________________ Bank'),
-  branchName: z.string().default('____________________ Branch'),
-  address: z.string().default('____________________'),
-  udin: z.string().default('____________________'),
-  reference: z.string().default('SBA/2026-27/________/_____'),
   reportDate: z.string(),
-  rows: z.array(reportRowSchema).min(1)
+  rows: z.array(reportRowSchema).min(1),
+  ...reportTemplateConfigSchema.shape
 });
 
 export type ItrExtraction = z.infer<typeof itrExtractionSchema>;
 export type IndividualReport = z.infer<typeof individualReportSchema>;
+export type ReportTemplateConfig = z.infer<typeof reportTemplateConfigSchema>;
+export type ReportTemplateUpdate = z.infer<typeof reportTemplateUpdateSchema>;
