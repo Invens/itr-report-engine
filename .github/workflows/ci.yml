@@ -145,6 +145,6 @@ jobs:
       - name: Build production images
         run: docker compose build api web
       - name: Verify Prisma migration runtime command
-        run: docker compose run --rm --no-deps migrate node node_modules/prisma/build/index.js --version
+        run: docker compose run --rm --no-deps migrate node packages/database/node_modules/prisma/build/index.js --version
       - name: Verify Coolify migration command matches runtime
-        run: grep -q 'node_modules/prisma/build/index.js' docker-compose.coolify.yml
+        run: grep -q 'packages/database/node_modules/prisma/build/index.js' docker-compose.coolify.yml
