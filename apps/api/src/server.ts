@@ -6,15 +6,30 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename, extname, resolve, sep } from 'node:path';
 import type { ItrExtraction } from '@itr/contracts';
-import { individualReportSchema } from '@itr/contracts';
+import {
+  individualReportSchema,
+  reportTemplateUpdateSchema
+} from '@itr/contracts';
 import { env } from './config.js';
 import { persistUpload, extractPdfText } from './document-service.js';
 import { extractItrWithDeepSeek } from './deepseek.js';
 import { validateExtraction, type ValidationIssue } from './validation.js';
 import { generateIndividualReport } from './report-generator.js';
+import { prisma } from './database.js';
+import {
+  ensureDefaultTemplate,
+  getDefaultTemplateConfig,
+  listAuditLogs,
+  listReports,
+  listTemplates,
+  persistExtraction,
+  persistGeneratedReport,
+  updateTemplate
+} from './persistence.js';
 
 type ExtractionResponseItem = {
   id: string;
+  documentId: string;
   file: string;
   storageKey: string;
   extraction: ItrExtraction;
@@ -54,8 +69,22 @@ await app.register(multipart, {
   throwFileSizeLimit: true
 });
 
-app.get('/health', async () => ({ status: 'ok', service: 'itr-api', timestamp: new Date().toISOString() }));
-app.get('/ready', { logLevel: 'silent' }, async () => ({ status: 'ready', service: 'itr-api' }));
+await ensureDefaultTemplate();
+
+app.get('/health', async () => ({
+  status: 'ok',
+  service: 'itr-api',
+  timestamp: new Date().toISOString()
+}));
+
+app.get('/ready', { logLevel: 'silent' }, async (_request, reply) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return { status: 'ready', service: 'itr-api' };
+  } catch {
+    return reply.code(503).send({ status: 'not-ready', service: 'itr-api' });
+  }
+});
 
 app.post('/v1/documents/extract', async (request, reply) => {
   const parts = request.files();
@@ -71,9 +100,19 @@ app.post('/v1/documents/extract', async (request, reply) => {
     const text = await extractPdfText(stored.storageKey);
     const extraction = await extractItrWithDeepSeek(text);
     const issues = validateExtraction(extraction);
+    const document = await persistExtraction({
+      originalName: part.filename,
+      mimeType: part.mimetype,
+      storageKey: stored.storageKey,
+      sha256: stored.sha256,
+      extraction,
+      issues,
+      ipAddress: request.ip
+    });
 
     results.push({
       id: randomUUID(),
+      documentId: document.id,
       file: part.filename,
       storageKey: stored.storageKey,
       extraction,
@@ -90,13 +129,44 @@ app.post('/v1/documents/extract', async (request, reply) => {
 });
 
 app.post('/v1/reports/individual', async (request, reply) => {
-  const parsed = individualReportSchema.safeParse(request.body);
+  const templateConfig = await getDefaultTemplateConfig();
+  const parsed = individualReportSchema.safeParse({
+    ...templateConfig,
+    ...(request.body as Record<string, unknown>)
+  });
+
   if (!parsed.success) {
     return reply.code(422).send({ error: 'Invalid report payload', details: parsed.error.flatten() });
   }
 
   const outputKey = await generateIndividualReport(parsed.data);
-  return reply.code(201).send({ outputKey });
+  const report = await persistGeneratedReport({
+    report: parsed.data,
+    outputKey,
+    ipAddress: request.ip
+  });
+
+  return reply.code(201).send({ reportId: report.id, outputKey });
+});
+
+app.get('/v1/reports', async () => ({ reports: await listReports() }));
+app.get('/v1/audit-logs', async () => ({ auditLogs: await listAuditLogs() }));
+app.get('/v1/templates', async () => ({ templates: await listTemplates() }));
+
+app.put('/v1/templates/:key', async (request, reply) => {
+  const params = request.params as { key: string };
+  const parsed = reportTemplateUpdateSchema.safeParse(request.body);
+
+  if (!parsed.success) {
+    return reply.code(422).send({ error: 'Invalid template payload', details: parsed.error.flatten() });
+  }
+
+  try {
+    const template = await updateTemplate(params.key, parsed.data);
+    return { template };
+  } catch {
+    return reply.code(404).send({ error: 'Template not found' });
+  }
 });
 
 app.get('/v1/reports/download', async (request, reply) => {
@@ -130,6 +200,10 @@ app.setErrorHandler((error, request, reply) => {
     error: resolved.statusCode === 500 ? 'Internal server error' : resolved.message,
     requestId: request.id
   });
+});
+
+app.addHook('onClose', async () => {
+  await prisma.$disconnect();
 });
 
 await app.listen({ host: '0.0.0.0', port: env.PORT });
