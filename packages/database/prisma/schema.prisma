@@ -95,6 +95,7 @@ model Document {
 
   @@index([assessmentYear])
   @@index([acknowledgement])
+  @@index([createdAt])
 }
 
 model Report {
@@ -109,6 +110,24 @@ model Report {
   generatedAt    DateTime?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model ReportTemplate {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  reportType  String
+  description String?
+  isActive    Boolean  @default(true)
+  config      Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([reportType])
+  @@index([isActive])
 }
 
 model AuditLog {
@@ -124,4 +143,5 @@ model AuditLog {
   createdAt  DateTime @default(now())
 
   @@index([entityType, entityId])
+  @@index([createdAt])
 }
