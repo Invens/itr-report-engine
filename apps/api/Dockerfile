@@ -20,6 +20,7 @@ ENV DATABASE_URL=$DATABASE_URL
 COPY . .
 RUN pnpm db:generate \
  && pnpm --filter @itr/contracts build \
+ && pnpm --filter @itr/database build \
  && pnpm --filter @itr/api build
 
 FROM base AS api-runtime
