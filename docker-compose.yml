@@ -1,0 +1,143 @@
+name: itr-report-engine
+
+x-api-environment: &api-environment
+  NODE_ENV: production
+  PORT: 4000
+  WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3000}}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-itr}:${POSTGRES_PASSWORD:?Run sh ./start.sh or set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-itr}?schema=public
+  REDIS_URL: redis://redis:6379
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY in .env or your shell}
+  DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+  DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+  STORAGE_DIR: /app/storage
+  MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+  MAX_BUNDLE_FILES: ${MAX_BUNDLE_FILES:-100}
+  OCR_MAX_PAGES: ${OCR_MAX_PAGES:-25}
+  OCR_DPI: ${OCR_DPI:-200}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-itr}
+      POSTGRES_USER: ${POSTGRES_USER:-itr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run sh ./start.sh or set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-itr} -d ${POSTGRES_DB:-itr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - private
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - private
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: api-runtime
+    environment: *api-environment
+    command:
+      - node
+      - packages/database/node_modules/prisma/build/index.js
+      - migrate
+      - deploy
+      - --schema
+      - packages/database/prisma/schema.prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - private
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: api-runtime
+    restart: unless-stopped
+    environment: *api-environment
+    volumes:
+      - document_storage:/app/storage
+    expose:
+      - "4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - private
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: web-runtime
+      args:
+        INTERNAL_API_URL: http://api:4000
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      INTERNAL_API_URL: http://api:4000
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - private
+
+volumes:
+  postgres_data:
+  redis_data:
+  document_storage:
+
+networks:
+  private:
+    driver: bridge

@@ -1,0 +1,23 @@
+{
+  "name": "itr-report-engine",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @itr/web --filter @itr/api dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @itr/contracts build && pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm --filter @itr/contracts build && pnpm -r lint",
+    "db:generate": "pnpm --filter @itr/database generate",
+    "db:migrate": "pnpm --filter @itr/database migrate:deploy",
+    "db:dev": "pnpm --filter @itr/database migrate:dev",
+    "db:validate": "pnpm --filter @itr/database validate",
+    "docker:up": "sh ./start.sh",
+    "docker:down": "docker compose --env-file .env down",
+    "docker:logs": "docker compose --env-file .env logs -f web api"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "typescript": "^5.9.2"
+  }
+}

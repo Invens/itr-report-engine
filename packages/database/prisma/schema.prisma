@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  REVIEWER
+  OPERATOR
+}
+
+enum EntityType {
+  INDIVIDUAL
+  COMPANY
+}
+
+enum DocumentStatus {
+  UPLOADED
+  QUEUED
+  PROCESSING
+  NEEDS_REVIEW
+  VERIFIED
+  FAILED
+}
+
+enum ReportStatus {
+  DRAFT
+  APPROVED
+  GENERATED
+  FAILED
+}
+
+enum FilingType {
+  ORIGINAL
+  BELATED
+  REVISED
+  UPDATED
+  UNKNOWN
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         UserRole   @default(OPERATOR)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  auditLogs    AuditLog[]
+}
+
+model ClientEntity {
+  id         String      @id @default(cuid())
+  name       String
+  pan        String?
+  gstin      String?
+  cin        String?
+  entityType EntityType
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  documents  Document[]
+  reports    Report[]
+
+  @@index([pan])
+  @@index([gstin])
+  @@index([cin])
+}
+
+model Document {
+  id              String         @id @default(cuid())
+  originalName    String
+  mimeType        String
+  storageKey      String         @unique
+  sha256          String         @unique
+  status          DocumentStatus @default(UPLOADED)
+  documentType    String?
+  assessmentYear  String?
+  acknowledgement String?
+  filingDate      DateTime?
+  filingType      FilingType     @default(UNKNOWN)
+  totalIncome     Decimal?       @db.Decimal(18, 2)
+  taxPayable      Decimal?       @db.Decimal(18, 2)
+  taxesPaid       Decimal?       @db.Decimal(18, 2)
+  extractedJson   Json?
+  confidenceJson  Json?
+  validationJson  Json?
+  errorMessage    String?
+  clientEntityId  String?
+  clientEntity    ClientEntity?  @relation(fields: [clientEntityId], references: [id])
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([assessmentYear])
+  @@index([acknowledgement])
+  @@index([createdAt])
+}
+
+model Report {
+  id             String       @id @default(cuid())
+  clientEntityId String
+  clientEntity   ClientEntity @relation(fields: [clientEntityId], references: [id])
+  reportType     String
+  status         ReportStatus @default(DRAFT)
+  payload        Json
+  outputKey      String?
+  approvedAt     DateTime?
+  generatedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model ReportTemplate {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  reportType  String
+  description String?
+  isActive    Boolean  @default(true)
+  config      Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([reportType])
+  @@index([isActive])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}

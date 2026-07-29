@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://itr:ci-only@localhost:5432/itr
+      REDIS_URL: redis://localhost:6379
+      DEEPSEEK_API_KEY: test-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile --reporter=silent
+      - name: Generate Prisma Client
+        run: pnpm db:generate
+      - name: Build shared contracts
+        run: pnpm --filter @itr/contracts build
+      - name: Validate database package
+        run: pnpm --filter @itr/database typecheck
+      - name: Build database package
+        run: pnpm --filter @itr/database build
+      - name: Typecheck API
+        id: api_typecheck
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm --filter @itr/api typecheck 2>&1 | tee api-typecheck.log
+      - name: Upload API typecheck diagnostics
+        if: steps.api_typecheck.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-typecheck-log
+          path: api-typecheck.log
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish API typecheck diagnostics
+        if: steps.api_typecheck.outcome == 'failure' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- api-typecheck-diagnostics -->';
+            const log = fs.readFileSync('api-typecheck.log', 'utf8').slice(0, 60000);
+            const body = `${marker}\n### API typecheck diagnostics\n\n\`\`\`text\n${log}\n\`\`\``;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+      - name: Resolve API typecheck diagnostics
+        if: steps.api_typecheck.outcome == 'success' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- api-typecheck-diagnostics -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              const body = `${marker}\n### API typecheck diagnostics\n\n✅ Passing on commit \`${context.sha.slice(0, 7)}\`.`;
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            }
+      - name: Fail on API typecheck errors
+        if: steps.api_typecheck.outcome == 'failure'
+        run: exit 1
+      - name: Run API report-rule tests
+        run: pnpm --filter @itr/api test
+      - name: Typecheck web
+        run: pnpm --filter @itr/web typecheck
+      - name: Build API
+        run: pnpm --filter @itr/api build
+      - name: Build web
+        run: pnpm --filter @itr/web build
+
+  migration:
+    needs: quality
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: itr
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}
+          POSTGRES_DB: itr
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U itr -d itr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://itr:ci-${{ github.run_id }}@localhost:5432/itr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install database dependencies
+        run: pnpm install --no-frozen-lockfile --reporter=silent
+      - name: Apply production migrations
+        run: pnpm db:migrate
+
+  docker:
+    needs: quality
+    runs-on: ubuntu-latest
+    env:
+      DEEPSEEK_API_KEY: test-key
+      POSTGRES_PASSWORD: ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate local Docker Compose
+        run: docker compose config
+      - name: Build production images
+        run: docker compose build api web
+      - name: Verify Prisma migration runtime command
+        run: docker compose run --rm --no-deps migrate node packages/database/node_modules/prisma/build/index.js --version
+      - name: Verify Coolify migration command matches runtime
+        run: grep -q 'packages/database/node_modules/prisma/build/index.js' docker-compose.coolify.yml
