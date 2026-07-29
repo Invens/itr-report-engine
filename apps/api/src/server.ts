@@ -14,7 +14,7 @@ import {
 } from '@itr/contracts';
 import { env } from './config.js';
 import { extractPdfContent, persistUpload } from './document-service.js';
-import { extractDocumentWithDeepSeek, extractItrWithDeepSeek } from './deepseek.js';
+import { extractDocumentsWithDeepSeek, extractItrWithDeepSeek } from './deepseek.js';
 import { validateDocumentExtraction, validateExtraction, type ValidationIssue } from './validation.js';
 import { generateConsolidatedReport, generateIndividualReport } from './report-generator.js';
 import { buildConsolidatedDraft } from './consolidated-draft.js';
@@ -27,7 +27,7 @@ import {
   listReports,
   listTemplates,
   loadDocumentExtractions,
-  persistDocumentExtraction,
+  persistDocumentExtractionBundle,
   persistExtraction,
   persistGeneratedConsolidatedReport,
   persistGeneratedReport,
@@ -86,7 +86,10 @@ function defaultReportDate() {
 
 function validatePdf(filename: string, mimetype: string) {
   if (mimetype !== 'application/pdf' || extname(filename).toLowerCase() !== '.pdf') {
-    throw Object.assign(new Error(`Unsupported file: ${filename}. Only PDF is accepted.`), { statusCode: 415 });
+    throw Object.assign(
+      new Error(`Unsupported file: ${filename}. Only PDF is accepted.`),
+      { statusCode: 415 }
+    );
   }
 }
 
@@ -103,7 +106,10 @@ const app = Fastify({
 await app.register(helmet, { crossOriginResourcePolicy: { policy: 'same-site' } });
 await app.register(cors, { origin: env.WEB_URL, credentials: true });
 await app.register(multipart, {
-  limits: { files: env.MAX_BUNDLE_FILES, fileSize: env.MAX_UPLOAD_MB * 1024 * 1024 },
+  limits: {
+    files: env.MAX_BUNDLE_FILES,
+    fileSize: env.MAX_UPLOAD_MB * 1024 * 1024
+  },
   throwFileSizeLimit: true
 });
 
@@ -154,19 +160,22 @@ app.post('/v1/documents/extract', async (request, reply) => {
       storageKey: stored.storageKey,
       extraction,
       issues,
-      requiresReview: issues.some((issue) => issue.severity === 'ERROR' || issue.severity === 'WARNING'),
+      requiresReview: issues.length > 0,
       extractionMode: content.extractionMode,
       pageCount: content.pageCount
     });
   }
 
-  if (results.length === 0) return reply.code(400).send({ error: 'No PDF files were uploaded' });
+  if (results.length === 0) {
+    return reply.code(400).send({ error: 'No PDF files were uploaded' });
+  }
   return { results };
 });
 
 app.post('/v1/documents/extract-bundle', async (request, reply) => {
   const parts = request.files();
   const results: BundleExtractionResponseItem[] = [];
+  let failedPhysicalFiles = 0;
 
   for await (const part of parts) {
     try {
@@ -174,56 +183,74 @@ app.post('/v1/documents/extract-bundle', async (request, reply) => {
       const buffer = await part.toBuffer();
       const stored = await persistUpload(buffer, part.filename);
       const content = await extractPdfContent(stored.storageKey);
-      const extraction = await extractDocumentWithDeepSeek(content.text, part.filename);
-      const issues = validateDocumentExtraction(extraction);
-      const document = await persistDocumentExtraction({
+      const extractions = await extractDocumentsWithDeepSeek(content.text, part.filename);
+      const issuesByExtraction = extractions.map((extraction) => validateDocumentExtraction(extraction));
+      const document = await persistDocumentExtractionBundle({
         originalName: part.filename,
         mimeType: part.mimetype,
         storageKey: stored.storageKey,
         sha256: stored.sha256,
-        extraction,
-        issues,
+        extractions,
+        issuesByExtraction,
         extractionMode: content.extractionMode,
         pageCount: content.pageCount,
         ipAddress: request.ip
       });
 
-      results.push({
-        id: randomUUID(),
-        documentId: document.id,
-        file: part.filename,
-        storageKey: stored.storageKey,
-        extraction,
-        issues,
-        requiresReview: issues.length > 0,
-        extractionMode: content.extractionMode,
-        pageCount: content.pageCount
+      extractions.forEach((extraction, index) => {
+        const issues = issuesByExtraction[index] ?? [];
+        results.push({
+          id: `${document.id}:${index}`,
+          documentId: document.id,
+          file: extractions.length > 1
+            ? `${part.filename} · logical return ${index + 1}`
+            : part.filename,
+          storageKey: stored.storageKey,
+          extraction,
+          issues,
+          requiresReview: issues.length > 0,
+          extractionMode: content.extractionMode,
+          pageCount: content.pageCount
+        });
       });
     } catch (error) {
+      failedPhysicalFiles += 1;
       const message = error instanceof Error ? error.message : 'Unknown extraction failure';
       request.log.warn({ file: part.filename, error: message }, 'bundle document extraction failed');
       results.push({
         id: randomUUID(),
         file: part.filename,
-        issues: [{ field: 'document', severity: 'ERROR', code: 'EXTRACTION_FAILED', message }],
+        issues: [{
+          field: 'document',
+          severity: 'ERROR',
+          code: 'EXTRACTION_FAILED',
+          message
+        }],
         requiresReview: true,
         error: message
       });
     }
   }
 
-  if (results.length === 0) return reply.code(400).send({ error: 'No PDF files were uploaded' });
+  if (results.length === 0) {
+    return reply.code(400).send({ error: 'No PDF files were uploaded' });
+  }
   return {
     results,
-    successfulDocumentIds: results.flatMap((item) => item.documentId ? [item.documentId] : []),
-    failedCount: results.filter((item) => item.error).length
+    successfulDocumentIds: [...new Set(
+      results.flatMap((item) => item.documentId ? [item.documentId] : [])
+    )],
+    failedCount: failedPhysicalFiles
   };
 });
 
 app.post('/v1/reports/consolidated/draft', async (request, reply) => {
   const parsed = draftRequestSchema.safeParse(request.body);
   if (!parsed.success) {
-    return reply.code(422).send({ error: 'Invalid draft request', details: parsed.error.flatten() });
+    return reply.code(422).send({
+      error: 'Invalid draft request',
+      details: parsed.error.flatten()
+    });
   }
 
   const documents = await loadDocumentExtractions(parsed.data.documentIds);
@@ -237,7 +264,8 @@ app.post('/v1/reports/consolidated/draft', async (request, reply) => {
   return {
     ...result,
     requiresReview: result.issues.length > 0,
-    sourceDocumentCount: documents.length
+    sourceDocumentCount: new Set(documents.map((document) => document.documentId)).size,
+    logicalDocumentCount: documents.length
   };
 });
 
@@ -249,7 +277,10 @@ app.post('/v1/reports/individual', async (request, reply) => {
   });
 
   if (!parsed.success) {
-    return reply.code(422).send({ error: 'Invalid report payload', details: parsed.error.flatten() });
+    return reply.code(422).send({
+      error: 'Invalid report payload',
+      details: parsed.error.flatten()
+    });
   }
 
   const outputKey = await generateIndividualReport(parsed.data);
@@ -269,7 +300,10 @@ app.post('/v1/reports/consolidated', async (request, reply) => {
   });
 
   if (!parsed.success) {
-    return reply.code(422).send({ error: 'Invalid consolidated report payload', details: parsed.error.flatten() });
+    return reply.code(422).send({
+      error: 'Invalid consolidated report payload',
+      details: parsed.error.flatten()
+    });
   }
 
   const outputKey = await generateConsolidatedReport(parsed.data);
@@ -289,7 +323,10 @@ app.put('/v1/templates/:key', async (request, reply) => {
   const params = request.params as { key: string };
   const parsed = reportTemplateUpdateSchema.safeParse(request.body);
   if (!parsed.success) {
-    return reply.code(422).send({ error: 'Invalid template payload', details: parsed.error.flatten() });
+    return reply.code(422).send({
+      error: 'Invalid template payload',
+      details: parsed.error.flatten()
+    });
   }
 
   try {
@@ -306,14 +343,18 @@ app.get('/v1/reports/download', async (request, reply) => {
 
   const storageRoot = resolve(env.STORAGE_DIR);
   const filePath = resolve(storageRoot, query.key);
-  if (!filePath.startsWith(`${storageRoot}${sep}`) || extname(filePath).toLowerCase() !== '.docx') {
+  if (!filePath.startsWith(`${storageRoot}${sep}`)
+    || extname(filePath).toLowerCase() !== '.docx') {
     return reply.code(400).send({ error: 'Invalid report key' });
   }
 
   try {
     const file = await readFile(filePath);
     return reply
-      .header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+      .header(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      )
       .header('Content-Disposition', `attachment; filename="${basename(filePath)}"`)
       .send(file);
   } catch {
