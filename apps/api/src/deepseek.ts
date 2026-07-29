@@ -1,3 +1,4 @@
+import { ZodError } from 'zod';
 import {
   auditedFinancialStatementsExtractionSchema,
   documentExtractionSchema,
@@ -11,6 +12,7 @@ import {
   type ItrExtraction
 } from '@itr/contracts';
 import { env } from './config.js';
+import { ExtractionPipelineError } from './extraction-error.js';
 
 const SUPPORTED_TYPES = [
   'ITR_ACKNOWLEDGEMENT',
@@ -64,33 +66,112 @@ function stripCodeFence(value: string) {
   return value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
 }
 
-async function requestJson(system: string, user: string) {
-  const response = await fetch(`${env.DEEPSEEK_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.DEEPSEEK_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: env.DEEPSEEK_MODEL,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ]
-    }),
-    signal: AbortSignal.timeout(180_000)
-  });
+function preview(value: string, limit = 4000) {
+  return value.length <= limit ? value : `${value.slice(0, limit)}\n…[truncated ${value.length - limit} characters]`;
+}
 
-  if (!response.ok) {
-    throw new Error(`DeepSeek request failed (${response.status}): ${await response.text()}`);
+async function requestJson(system: string, user: string) {
+  let response: Response;
+  try {
+    response = await fetch(`${env.DEEPSEEK_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.DEEPSEEK_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: env.DEEPSEEK_MODEL,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ]
+      }),
+      signal: AbortSignal.timeout(180_000)
+    });
+  } catch (error) {
+    const timeout = error instanceof Error
+      && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    throw new ExtractionPipelineError({
+      code: timeout ? 'DEEPSEEK_TIMEOUT' : 'DEEPSEEK_NETWORK_ERROR',
+      stage: 'DEEPSEEK_REQUEST',
+      message: timeout
+        ? 'DeepSeek request exceeded the 180 second timeout'
+        : `Unable to connect to DeepSeek: ${error instanceof Error ? error.message : 'network error'}`,
+      details: {
+        baseUrl: env.DEEPSEEK_BASE_URL,
+        model: env.DEEPSEEK_MODEL,
+        timeoutMs: 180_000
+      },
+      cause: error
+    });
   }
 
-  const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  let rawResponse = '';
+  try {
+    rawResponse = await response.text();
+  } catch (error) {
+    throw new ExtractionPipelineError({
+      code: 'DEEPSEEK_RESPONSE_READ_FAILED',
+      stage: 'DEEPSEEK_RESPONSE',
+      message: 'DeepSeek responded, but the response body could not be read',
+      details: {
+        status: response.status,
+        statusText: response.statusText
+      },
+      cause: error
+    });
+  }
+
+  if (!response.ok) {
+    throw new ExtractionPipelineError({
+      code: `DEEPSEEK_HTTP_${response.status}`,
+      stage: 'DEEPSEEK_RESPONSE',
+      message: `DeepSeek request failed with HTTP ${response.status} ${response.statusText}`,
+      details: {
+        status: response.status,
+        statusText: response.statusText,
+        responseBody: preview(rawResponse)
+      }
+    });
+  }
+
+  let body: { choices?: Array<{ message?: { content?: string } }> };
+  try {
+    body = JSON.parse(rawResponse) as { choices?: Array<{ message?: { content?: string } }> };
+  } catch (error) {
+    throw new ExtractionPipelineError({
+      code: 'DEEPSEEK_ENVELOPE_INVALID_JSON',
+      stage: 'DEEPSEEK_RESPONSE',
+      message: 'DeepSeek HTTP response was not valid JSON',
+      details: { responseBody: preview(rawResponse) },
+      cause: error
+    });
+  }
+
   const content = body.choices?.[0]?.message?.content;
-  if (!content) throw new Error('DeepSeek returned no content');
-  return JSON.parse(stripCodeFence(content)) as unknown;
+  if (!content) {
+    throw new ExtractionPipelineError({
+      code: 'DEEPSEEK_EMPTY_CONTENT',
+      stage: 'DEEPSEEK_RESPONSE',
+      message: 'DeepSeek returned no assistant content',
+      details: { responseBody: preview(rawResponse) }
+    });
+  }
+
+  const cleaned = stripCodeFence(content);
+  try {
+    return JSON.parse(cleaned) as unknown;
+  } catch (error) {
+    throw new ExtractionPipelineError({
+      code: 'MODEL_OUTPUT_INVALID_JSON',
+      stage: 'MODEL_JSON_PARSE',
+      message: `DeepSeek content was not valid JSON: ${error instanceof Error ? error.message : 'parse failure'}`,
+      details: { modelOutput: preview(content) },
+      cause: error
+    });
+  }
 }
 
 export function detectDocumentType(text: string, originalName = ''): SupportedDocumentType | 'UNKNOWN' {
@@ -123,7 +204,16 @@ async function classifyUnknownDocument(text: string, originalName: string): Prom
   ) as { documentType?: string };
 
   if (!SUPPORTED_TYPES.includes(value.documentType as SupportedDocumentType)) {
-    throw new Error(`Unsupported or unrecognized document type: ${value.documentType ?? 'UNKNOWN'}`);
+    throw new ExtractionPipelineError({
+      code: 'DOCUMENT_TYPE_UNSUPPORTED',
+      stage: 'DOCUMENT_CLASSIFICATION',
+      message: `Unsupported or unrecognized document type: ${value.documentType ?? 'UNKNOWN'}`,
+      details: {
+        originalName,
+        returnedDocumentType: value.documentType,
+        supportedDocumentTypes: SUPPORTED_TYPES
+      }
+    });
   }
   return value.documentType as SupportedDocumentType;
 }
@@ -145,7 +235,10 @@ function relevantExcerpt(text: string, type: SupportedDocumentType) {
     GSTR_1A: ['FINANCIAL YEAR', 'TAX PERIOD', 'GSTR-1A', 'TOTAL LIABILITY', 'CREDIT/DEBIT', 'AMENDMENT'],
     GSTR_3B: ['FINANCIAL YEAR', 'PERIOD', '3.1 DETAILS', 'ELIGIBLE ITC', 'INTEREST', 'TAX PAYMENT'],
     AUDITED_FINANCIAL_STATEMENTS: ['BALANCE SHEET', 'PROFIT AND LOSS', 'NOTES', 'UDIN', 'AMOUNT IN'],
-    TDS_STATEMENT: ['FORM 26AS', 'ASSESSMENT YEAR', 'TAX DEDUCTED AT SOURCE', 'TAX COLLECTED AT SOURCE', 'CHALLAN', 'SELF ASSESSMENT TAX']
+    TDS_STATEMENT: [
+      'FORM 26AS', 'ASSESSMENT YEAR', 'TAX DEDUCTED AT SOURCE',
+      'TAX COLLECTED AT SOURCE', 'CHALLAN', 'SELF ASSESSMENT TAX'
+    ]
   };
 
   const ranges: Array<[number, number]> = [[0, 18_000]];
@@ -233,7 +326,32 @@ async function extractSingleDocument(
     promptFor(documentType, combinedGstr1),
     JSON.stringify({ documentType, originalName, sourceText: excerpt })
   );
-  return documentExtractionSchema.parse(schemaFor(documentType).parse(value));
+
+  try {
+    return documentExtractionSchema.parse(schemaFor(documentType).parse(value));
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new ExtractionPipelineError({
+        code: 'MODEL_SCHEMA_VALIDATION_FAILED',
+        stage: 'SCHEMA_VALIDATION',
+        message: `DeepSeek JSON did not match the ${documentType} schema`,
+        details: {
+          documentType,
+          originalName,
+          issues: error.issues.map((issue) => ({
+            path: issue.path.join('.'),
+            code: issue.code,
+            message: issue.message,
+            expected: 'expected' in issue ? issue.expected : undefined,
+            received: 'received' in issue ? issue.received : undefined
+          })),
+          modelJson: value
+        },
+        cause: error
+      });
+    }
+    throw error;
+  }
 }
 
 export async function extractDocumentsWithDeepSeek(
@@ -264,7 +382,19 @@ export async function extractDocumentsWithDeepSeek(
     documents.push(await extractSingleDocument(chunk, resolvedType, logicalName));
   }
 
-  if (documents.length === 0) throw new Error('No logical document could be extracted');
+  if (documents.length === 0) {
+    throw new ExtractionPipelineError({
+      code: 'NO_LOGICAL_DOCUMENTS',
+      stage: 'DOCUMENT_CLASSIFICATION',
+      message: 'No logical document could be extracted from the PDF',
+      details: {
+        originalName,
+        detectedDocumentType: documentType,
+        sourceTextLength: text.length,
+        chunkCount: chunks.length
+      }
+    });
+  }
   return documents;
 }
 
@@ -274,14 +404,29 @@ export async function extractDocumentWithDeepSeek(
 ): Promise<DocumentExtraction> {
   const documents = await extractDocumentsWithDeepSeek(text, originalName);
   const first = documents[0];
-  if (!first) throw new Error('No document was extracted');
+  if (!first) {
+    throw new ExtractionPipelineError({
+      code: 'NO_LOGICAL_DOCUMENTS',
+      stage: 'DOCUMENT_CLASSIFICATION',
+      message: 'No document was extracted',
+      details: { originalName }
+    });
+  }
   return first;
 }
 
 export async function extractItrWithDeepSeek(text: string): Promise<ItrExtraction> {
   const value = await extractDocumentWithDeepSeek(text);
   if (value.documentType !== 'ITR_ACKNOWLEDGEMENT') {
-    throw new Error(`Expected ITR acknowledgement but detected ${value.documentType}. Use consolidated bundle extraction.`);
+    throw new ExtractionPipelineError({
+      code: 'UNEXPECTED_DOCUMENT_TYPE',
+      stage: 'DOCUMENT_CLASSIFICATION',
+      message: `Expected ITR acknowledgement but detected ${value.documentType}. Use consolidated bundle extraction.`,
+      details: {
+        expected: 'ITR_ACKNOWLEDGEMENT',
+        received: value.documentType
+      }
+    });
   }
   return value;
 }
