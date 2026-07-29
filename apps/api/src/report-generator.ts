@@ -15,8 +15,12 @@ import {
 import {
   consolidatedReportSchema,
   individualReportSchema,
+  multiIndividualReportSchema,
   type ConsolidatedReport,
-  type IndividualReport
+  type IndividualReport,
+  type MultiIndividualReport,
+  type ReportRow,
+  type ReportTemplateConfig
 } from '@itr/contracts';
 import { env } from './config.js';
 import {
@@ -29,6 +33,11 @@ import {
 } from './report-rules.js';
 
 type ParagraphAlignment = typeof AlignmentType[keyof typeof AlignmentType];
+type HeaderData = Pick<ReportTemplateConfig, 'udin' | 'reference' | 'bankName' | 'branchName' | 'address'> & {
+  reportDate: string;
+};
+type SignatureData = Pick<ReportTemplateConfig,
+  'firmName' | 'firmDescription' | 'firmRegistration' | 'signerName' | 'signerDesignation' | 'membershipNumber'>;
 
 const inr = (value: number) => `${formatIndianAmount(value, 0)}/-`;
 const decimalAmount = (value: number) => formatIndianAmount(value, 2);
@@ -65,7 +74,7 @@ function monthName(period: string) {
     .format(new Date(Date.UTC(year, month - 1, 1)));
 }
 
-function templateHeader(data: Pick<ConsolidatedReport, 'udin' | 'reference' | 'reportDate' | 'bankName' | 'branchName' | 'address'>) {
+function templateHeader(data: HeaderData) {
   return [
     new Paragraph({ children: [new TextRun({ text: 'CONFIDENTIAL', bold: true, size: 22 })] }),
     new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun(`UDIN No.: ${data.udin}`)] }),
@@ -80,7 +89,7 @@ function templateHeader(data: Pick<ConsolidatedReport, 'udin' | 'reference' | 'r
   ];
 }
 
-function itrTable(rows: ConsolidatedReport['itrSections'][number]['rows']) {
+function itrTable(rows: ReportRow[]) {
   const selectedRows = selectLatestItrRows(rows);
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
@@ -234,7 +243,7 @@ function balanceSheetTable(section: NonNullable<ConsolidatedReport['balanceSheet
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows });
 }
 
-function signature(data: Pick<ConsolidatedReport, 'firmName' | 'firmDescription' | 'firmRegistration' | 'signerName' | 'signerDesignation' | 'membershipNumber'>) {
+function signature(data: SignatureData) {
   return [
     spacer(),
     new Paragraph('Submitted for information and necessary action.'),
@@ -290,6 +299,49 @@ export async function generateIndividualReport(input: IndividualReport) {
 
   const safeName = data.clientName.replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '');
   return persistDocument(doc, safeName, 'ITR_Verification');
+}
+
+export async function generateMultiIndividualReport(input: MultiIndividualReport) {
+  const data = multiIndividualReportSchema.parse(input);
+  const subject = data.subjectEntities
+    .map((entity, index) => `${index + 1}. ${entity.name}`)
+    .join('\n');
+  const children: Array<Paragraph | Table> = [
+    ...templateHeader(data),
+    new Paragraph({
+      children: [new TextRun({
+        text: `Sub: - Report on Verification of ITR (Acknowledgement No.) of\n${subject}`,
+        bold: true
+      })]
+    })
+  ];
+
+  for (const section of data.itrSections) {
+    const years = selectLatestItrRows(section.rows)
+      .map((row) => `A.Y. ${row.assessmentYear}`)
+      .join(' & ');
+    children.push(
+      heading(`${section.clientName.toUpperCase()} — PAN ${section.pan}`),
+      new Paragraph(`As per your instructions we have verified acknowledgement number of Income Tax Return filed with the Income Tax Department www.incometax.gov.in for ${years} of ${section.clientName.toUpperCase()} having PAN No. ${section.pan}. We have found the same as correct.`),
+      spacer(),
+      itrTable(section.rows)
+    );
+  }
+  children.push(...signature(data));
+
+  const doc = new Document({
+    sections: [{
+      properties: { page: { margin: { top: 650, right: 420, bottom: 650, left: 420 } } },
+      children
+    }]
+  });
+  const safeName = data.subjectEntities
+    .map((entity) => entity.name)
+    .join('_')
+    .replace(/[^a-z0-9]+/gi, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 120);
+  return persistDocument(doc, safeName || 'Multiple_Individuals', 'Consolidated_ITR_Verification');
 }
 
 export async function generateConsolidatedReport(input: ConsolidatedReport) {
