@@ -1,4 +1,4 @@
-import type { DocumentExtraction, ItrExtraction } from '@itr/contracts';
+import type { DocumentExtraction, ItrExtraction, TaxCreditSummary } from '@itr/contracts';
 import {
   derivePanFromGstin,
   expectedGstr1OutwardValue,
@@ -30,8 +30,22 @@ function confidenceIssues(confidence: Record<string, number>) {
   return issues;
 }
 
+function validateTaxCredits(value: TaxCreditSummary): ValidationIssue[] {
+  const expected = value.tds + value.tcs + value.advanceTax + value.selfAssessmentTax;
+  if (Math.abs(value.total - expected) <= 1) return [];
+  return [{
+    field: 'taxCredits.total',
+    severity: 'WARNING',
+    code: 'TAX_CREDIT_TOTAL_MISMATCH',
+    message: `Tax-credit total differs from TDS, TCS, advance tax and self-assessment tax components by ${(value.total - expected).toFixed(2)}`
+  }];
+}
+
 export function validateExtraction(value: ItrExtraction): ValidationIssue[] {
-  const issues = confidenceIssues(value.confidence as Record<string, number>);
+  const issues = [
+    ...confidenceIssues(value.confidence as Record<string, number>),
+    ...validateTaxCredits(value.taxCredits)
+  ];
 
   if (!value.evidence.pan?.toUpperCase().includes(value.pan)) {
     issues.push({
@@ -78,6 +92,7 @@ export function validateDocumentExtraction(value: DocumentExtraction): Validatio
   const issues = confidenceIssues(value.confidence as Record<string, number>);
 
   if (value.documentType === 'ITR_FULL') {
+    issues.push(...validateTaxCredits(value.taxCredits));
     if (value.filingSection === '139(4)' && value.filingType !== 'BELATED') {
       issues.push({
         field: 'filingType',
@@ -110,6 +125,19 @@ export function validateDocumentExtraction(value: DocumentExtraction): Validatio
         severity: 'ERROR',
         code: 'NO_FINANCIAL_VALUES',
         message: 'No Balance Sheet or Profit and Loss values were extracted'
+      });
+    }
+    return issues;
+  }
+
+  if (value.documentType === 'TDS_STATEMENT') {
+    issues.push(...validateTaxCredits(value.taxCredits));
+    if (!value.evidence.pan?.toUpperCase().includes(value.pan)) {
+      issues.push({
+        field: 'pan',
+        severity: 'WARNING',
+        code: 'PAN_EVIDENCE_MISSING',
+        message: 'PAN is not present in the tax-statement evidence snippet'
       });
     }
     return issues;
