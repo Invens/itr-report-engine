@@ -10,15 +10,21 @@ import type { DocumentExtraction, ItrExtraction } from '@itr/contracts';
 import {
   consolidatedReportSchema,
   individualReportSchema,
+  multiIndividualReportSchema,
   reportTemplateUpdateSchema
 } from '@itr/contracts';
 import { env } from './config.js';
 import { extractPdfContent, persistUpload } from './document-service.js';
 import { extractDocumentsWithDeepSeek, extractItrWithDeepSeek } from './deepseek.js';
 import { validateDocumentExtraction, validateExtraction, type ValidationIssue } from './validation.js';
-import { generateConsolidatedReport, generateIndividualReport } from './report-generator.js';
+import {
+  generateConsolidatedReport,
+  generateIndividualReport,
+  generateMultiIndividualReport
+} from './report-generator.js';
 import { buildConsolidatedDraft } from './consolidated-draft.js';
 import { prisma } from './database.js';
+import { persistGeneratedMultiIndividualReport } from './multi-individual-persistence.js';
 import {
   ensureDefaultTemplates,
   getDefaultTemplateConfig,
@@ -285,6 +291,29 @@ app.post('/v1/reports/individual', async (request, reply) => {
 
   const outputKey = await generateIndividualReport(parsed.data);
   const report = await persistGeneratedReport({
+    report: parsed.data,
+    outputKey,
+    ipAddress: request.ip
+  });
+  return reply.code(201).send({ reportId: report.id, outputKey });
+});
+
+app.post('/v1/reports/multi-individual', async (request, reply) => {
+  const templateConfig = await getDefaultTemplateConfig();
+  const parsed = multiIndividualReportSchema.safeParse({
+    ...templateConfig,
+    ...(request.body as Record<string, unknown>)
+  });
+
+  if (!parsed.success) {
+    return reply.code(422).send({
+      error: 'Invalid multi-individual report payload',
+      details: parsed.error.flatten()
+    });
+  }
+
+  const outputKey = await generateMultiIndividualReport(parsed.data);
+  const report = await persistGeneratedMultiIndividualReport({
     report: parsed.data,
     outputKey,
     ipAddress: request.ip
