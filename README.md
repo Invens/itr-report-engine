@@ -1,6 +1,6 @@
 # ITR Report Engine
 
-Production-oriented monorepo for uploading Indian income-tax, GST and audited-financial-statement PDFs; extracting structured source data with DeepSeek and local OCR fallback; validating and reconciling the records; reviewing a draft; and generating verification reports in Microsoft Word format.
+Production-oriented monorepo for uploading Indian income-tax, Form 26AS, GST and audited-financial-statement PDFs; extracting structured source data with DeepSeek and local OCR fallback; validating and reconciling records; reviewing a draft; and generating verification reports in Microsoft Word format.
 
 ## Stack
 
@@ -11,7 +11,7 @@ Production-oriented monorepo for uploading Indian income-tax, GST and audited-fi
 - PostgreSQL 16 with Prisma migrations
 - Redis 7
 - Shared Zod contracts
-- Deterministic ITR, GST and financial-statement reconciliation rules
+- Deterministic ITR, tax-credit, GST and financial-statement reconciliation rules
 - DOCX report generation
 - Docker Compose, Coolify and GitHub Actions
 
@@ -19,7 +19,12 @@ Production-oriented monorepo for uploading Indian income-tax, GST and audited-fi
 
 ### Individual ITR verification
 
-Upload one or more ITR acknowledgement PDFs. The engine separates taxpayers using PAN and legal name, keeps assessment years newest first, selects the latest revised/updated filing for each assessment year and generates a separate Word report for every taxpayer.
+Upload one or more ITR acknowledgement PDFs. The engine separates taxpayers using PAN and legal name, keeps assessment years newest first, and selects the latest revised or updated filing for each assessment year.
+
+The reviewer can generate:
+
+- a separate Word report for each taxpayer; or
+- one consolidated Word report with a common header/signature and a separate ITR section for every PAN.
 
 ### Company consolidated verification
 
@@ -27,22 +32,26 @@ Upload one company bundle containing any supported combination of:
 
 - company ITR acknowledgements and complete ITR returns;
 - director or key-person ITR acknowledgements/returns;
+- Form 26AS or Annual Tax Statements;
 - monthly GSTR-1, GSTR-1A and GSTR-3B returns for one or more state GSTINs;
 - audited Balance Sheet and Profit and Loss statements.
 
-The engine classifies each PDF, groups records by PAN/GSTIN, builds a human-review draft and generates one report containing company/director ITR sections, state-wise GST reconciliation, financial-statement versus ITR-6 comparison and review remarks.
+The engine classifies each physical PDF, splits merged GST PDFs into logical monthly returns, groups records by PAN/GSTIN, builds a human-review draft and generates one report containing company/director ITR sections, state-wise GST reconciliation, Form 26AS observations, financial-statement versus ITR-6 comparison and review remarks.
 
 ## Learned deterministic rules
 
-- Legal names come from the tax return/PAN source, not filenames.
+- Legal names come from the tax return, PAN or tax statement, not filenames.
 - Every taxpayer is isolated by PAN; every state GST registration is isolated by GSTIN.
 - Section 139(4) is stored as `BELATED`, not revised.
 - For revised or updated returns, the final table uses the latest filing while retaining original filing metadata when available.
 - Total income, current-year business loss, accounting PBT, PAT and taxable business income are distinct fields.
+- Form 26AS TDS, TCS, advance tax and self-assessment tax remain separate and are compared with the matching PAN/assessment-year ITR.
+- A self-assessment-tax amount claimed in an ITR but not found in Form 26AS is surfaced for review.
 - GSTR-1 reconciliation uses final outward liability, not gross invoice value or HSN summary.
 - GSTR-1A adjustments are retained even when turnover is zero and tax changes.
 - Negative amendments and credit notes remain negative.
 - GSTR-3B gross ITC, reversal and net ITC remain separate.
+- Merged GST PDFs are split using return headers; filename and physical page order do not determine the tax period.
 - Audited statement units (`RUPEES`, `HUNDREDS`, `LAKHS`) are normalized internally to rupees.
 - Financial differences up to the configured ₹1 tolerance are treated as rounding; larger differences require review.
 - Statutory financial-statement audit and tax-audit metadata are stored separately.
@@ -145,11 +154,13 @@ Set `DEEPSEEK_API_KEY` as a runtime-only secret and assign the domain only to th
 ```text
 Upload PDF bundle
       ↓
-Persist and hash every document
+Persist and hash every physical file
       ↓
 Extract PDF text or use OCR fallback
       ↓
-Classify ITR / GST / audited statement
+Split merged PDFs into logical returns
+      ↓
+Classify ITR / Form 26AS / GST / audited statement
       ↓
 DeepSeek structured source extraction
       ↓
@@ -157,7 +168,7 @@ Zod validation and deterministic checks
       ↓
 Persist provenance, confidence and audit event
       ↓
-Group by PAN and GSTIN
+Group by PAN, assessment year and GSTIN
       ↓
 Build consolidated reconciliation draft
       ↓
@@ -174,6 +185,7 @@ GET  /ready
 POST /v1/documents/extract
 POST /v1/documents/extract-bundle
 POST /v1/reports/individual
+POST /v1/reports/multi-individual
 POST /v1/reports/consolidated/draft
 POST /v1/reports/consolidated
 GET  /v1/reports
