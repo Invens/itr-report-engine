@@ -1,7 +1,6 @@
 import type {
   GstReturnExtraction,
   ReportRow,
-  SourceUnit,
   TaxVector
 } from '@itr/contracts';
 
