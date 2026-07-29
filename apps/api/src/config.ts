@@ -1,4 +1,5 @@
 import './tds-schema-normalization.js';
+import './tds-nested-schema-normalization.js';
 import { z } from 'zod';
 
 const envSchema = z.object({
