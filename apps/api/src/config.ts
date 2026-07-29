@@ -10,7 +10,10 @@ const envSchema = z.object({
   DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
   DEEPSEEK_MODEL: z.string().default('deepseek-chat'),
   STORAGE_DIR: z.string().default('./storage'),
-  MAX_UPLOAD_MB: z.coerce.number().positive().default(25)
+  MAX_UPLOAD_MB: z.coerce.number().positive().default(25),
+  MAX_BUNDLE_FILES: z.coerce.number().int().min(1).max(250).default(100),
+  OCR_MAX_PAGES: z.coerce.number().int().min(1).max(100).default(25),
+  OCR_DPI: z.coerce.number().int().min(120).max(400).default(200)
 });
 
 export const env = envSchema.parse(process.env);
