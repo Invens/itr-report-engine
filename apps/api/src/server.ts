@@ -16,6 +16,12 @@ import {
 import { env } from './config.js';
 import { extractPdfContent, persistUpload } from './document-service.js';
 import { extractDocumentsWithDeepSeek, extractItrWithDeepSeek } from './deepseek.js';
+import {
+  ExtractionPipelineError,
+  toExtractionErrorLog,
+  type ExtractionErrorLog,
+  type ExtractionStage
+} from './extraction-error.js';
 import { validateDocumentExtraction, validateExtraction, type ValidationIssue } from './validation.js';
 import {
   generateConsolidatedReport,
@@ -68,6 +74,7 @@ type BundleExtractionResponseItem = {
   extractionMode?: 'PDF_TEXT' | 'OCR';
   pageCount?: number | null;
   error?: string;
+  errorLog?: ExtractionErrorLog;
 };
 
 function resolveHttpError(error: unknown) {
@@ -92,17 +99,27 @@ function defaultReportDate() {
 
 function validatePdf(filename: string, mimetype: string) {
   if (mimetype !== 'application/pdf' || extname(filename).toLowerCase() !== '.pdf') {
-    throw Object.assign(
-      new Error(`Unsupported file: ${filename}. Only PDF is accepted.`),
-      { statusCode: 415 }
-    );
+    throw new ExtractionPipelineError({
+      code: 'UNSUPPORTED_FILE_TYPE',
+      stage: 'UPLOAD_VALIDATION',
+      message: `Unsupported file: ${filename}. Only PDF is accepted.`,
+      details: { filename, mimetype }
+    });
   }
 }
 
 const app = Fastify({
   logger: {
     level: env.NODE_ENV === 'production' ? 'info' : 'debug',
-    redact: ['req.headers.authorization', 'req.headers.cookie', '*.pan', '*.gstin', '*.din']
+    redact: [
+      'req.headers.authorization',
+      'req.headers.cookie',
+      '*.pan',
+      '*.gstin',
+      '*.din',
+      '*.modelJson.pan',
+      '*.modelJson.gstin'
+    ]
   },
   requestIdHeader: 'x-request-id',
   genReqId: () => randomUUID(),
@@ -173,9 +190,9 @@ app.post('/v1/documents/extract', async (request, reply) => {
   }
 
   if (results.length === 0) {
-    return reply.code(400).send({ error: 'No PDF files were uploaded' });
+    return reply.code(400).send({ error: 'No PDF files were uploaded', requestId: request.id });
   }
-  return { results };
+  return { requestId: request.id, results };
 });
 
 app.post('/v1/documents/extract-bundle', async (request, reply) => {
@@ -184,13 +201,35 @@ app.post('/v1/documents/extract-bundle', async (request, reply) => {
   let failedPhysicalFiles = 0;
 
   for await (const part of parts) {
+    let stage: ExtractionStage = 'UPLOAD_VALIDATION';
+    let fileSizeBytes: number | undefined;
+    let storageKey: string | undefined;
+    let extractionMode: 'PDF_TEXT' | 'OCR' | undefined;
+    let pageCount: number | null | undefined;
+    let sourceTextLength: number | undefined;
+
     try {
       validatePdf(part.filename, part.mimetype);
+
+      stage = 'UPLOAD_READ';
       const buffer = await part.toBuffer();
+      fileSizeBytes = buffer.byteLength;
+
+      stage = 'UPLOAD_PERSISTENCE';
       const stored = await persistUpload(buffer, part.filename);
+      storageKey = stored.storageKey;
+
+      stage = 'PDF_TEXT_EXTRACTION';
       const content = await extractPdfContent(stored.storageKey);
+      extractionMode = content.extractionMode;
+      pageCount = content.pageCount;
+      sourceTextLength = content.text.length;
+
+      stage = 'DOCUMENT_CLASSIFICATION';
       const extractions = await extractDocumentsWithDeepSeek(content.text, part.filename);
       const issuesByExtraction = extractions.map((extraction) => validateDocumentExtraction(extraction));
+
+      stage = 'DOCUMENT_PERSISTENCE';
       const document = await persistDocumentExtractionBundle({
         originalName: part.filename,
         mimeType: part.mimetype,
@@ -221,32 +260,68 @@ app.post('/v1/documents/extract-bundle', async (request, reply) => {
       });
     } catch (error) {
       failedPhysicalFiles += 1;
-      const message = error instanceof Error ? error.message : 'Unknown extraction failure';
-      request.log.warn({ file: part.filename, error: message }, 'bundle document extraction failed');
+      const errorLog = toExtractionErrorLog({
+        error,
+        requestId: request.id,
+        file: part.filename,
+        fallbackStage: stage,
+        includeStack: true
+      });
+
+      request.log.error({
+        err: error,
+        extractionFailure: errorLog,
+        file: part.filename,
+        mimetype: part.mimetype,
+        fileSizeBytes,
+        storageKey,
+        extractionMode,
+        pageCount,
+        sourceTextLength
+      }, 'bundle document extraction failed');
+
       results.push({
         id: randomUUID(),
         file: part.filename,
+        storageKey,
+        extractionMode,
+        pageCount,
         issues: [{
           field: 'document',
           severity: 'ERROR',
-          code: 'EXTRACTION_FAILED',
-          message
+          code: errorLog.code,
+          message: `[${errorLog.stage}] ${errorLog.message}`
         }],
         requiresReview: true,
-        error: message
+        error: errorLog.message,
+        errorLog
       });
     }
   }
 
   if (results.length === 0) {
-    return reply.code(400).send({ error: 'No PDF files were uploaded' });
+    return reply.code(400).send({
+      error: 'No PDF files were uploaded',
+      requestId: request.id
+    });
   }
+
+  const successfulLogicalDocuments = results.filter((item) => Boolean(item.extraction)).length;
+  const failedResults = results.filter((item) => Boolean(item.errorLog));
+
   return {
+    requestId: request.id,
     results,
     successfulDocumentIds: [...new Set(
       results.flatMap((item) => item.documentId ? [item.documentId] : [])
     )],
-    failedCount: failedPhysicalFiles
+    successfulLogicalDocumentCount: successfulLogicalDocuments,
+    failedCount: failedPhysicalFiles,
+    diagnostics: {
+      failedPhysicalFileCount: failedPhysicalFiles,
+      successfulLogicalDocumentCount: successfulLogicalDocuments,
+      failures: failedResults.map((item) => item.errorLog)
+    }
   };
 });
 
@@ -255,7 +330,8 @@ app.post('/v1/reports/consolidated/draft', async (request, reply) => {
   if (!parsed.success) {
     return reply.code(422).send({
       error: 'Invalid draft request',
-      details: parsed.error.flatten()
+      details: parsed.error.flatten(),
+      requestId: request.id
     });
   }
 
@@ -268,6 +344,7 @@ app.post('/v1/reports/consolidated/draft', async (request, reply) => {
   );
 
   return {
+    requestId: request.id,
     ...result,
     requiresReview: result.issues.length > 0,
     sourceDocumentCount: new Set(documents.map((document) => document.documentId)).size,
@@ -285,7 +362,8 @@ app.post('/v1/reports/individual', async (request, reply) => {
   if (!parsed.success) {
     return reply.code(422).send({
       error: 'Invalid report payload',
-      details: parsed.error.flatten()
+      details: parsed.error.flatten(),
+      requestId: request.id
     });
   }
 
@@ -295,7 +373,7 @@ app.post('/v1/reports/individual', async (request, reply) => {
     outputKey,
     ipAddress: request.ip
   });
-  return reply.code(201).send({ reportId: report.id, outputKey });
+  return reply.code(201).send({ reportId: report.id, outputKey, requestId: request.id });
 });
 
 app.post('/v1/reports/multi-individual', async (request, reply) => {
@@ -308,7 +386,8 @@ app.post('/v1/reports/multi-individual', async (request, reply) => {
   if (!parsed.success) {
     return reply.code(422).send({
       error: 'Invalid multi-individual report payload',
-      details: parsed.error.flatten()
+      details: parsed.error.flatten(),
+      requestId: request.id
     });
   }
 
@@ -318,7 +397,7 @@ app.post('/v1/reports/multi-individual', async (request, reply) => {
     outputKey,
     ipAddress: request.ip
   });
-  return reply.code(201).send({ reportId: report.id, outputKey });
+  return reply.code(201).send({ reportId: report.id, outputKey, requestId: request.id });
 });
 
 app.post('/v1/reports/consolidated', async (request, reply) => {
@@ -331,7 +410,8 @@ app.post('/v1/reports/consolidated', async (request, reply) => {
   if (!parsed.success) {
     return reply.code(422).send({
       error: 'Invalid consolidated report payload',
-      details: parsed.error.flatten()
+      details: parsed.error.flatten(),
+      requestId: request.id
     });
   }
 
@@ -341,7 +421,7 @@ app.post('/v1/reports/consolidated', async (request, reply) => {
     outputKey,
     ipAddress: request.ip
   });
-  return reply.code(201).send({ reportId: report.id, outputKey });
+  return reply.code(201).send({ reportId: report.id, outputKey, requestId: request.id });
 });
 
 app.get('/v1/reports', async () => ({ reports: await listReports() }));
@@ -354,27 +434,30 @@ app.put('/v1/templates/:key', async (request, reply) => {
   if (!parsed.success) {
     return reply.code(422).send({
       error: 'Invalid template payload',
-      details: parsed.error.flatten()
+      details: parsed.error.flatten(),
+      requestId: request.id
     });
   }
 
   try {
     const template = await updateTemplate(params.key, parsed.data);
-    return { template };
+    return { template, requestId: request.id };
   } catch {
-    return reply.code(404).send({ error: 'Template not found' });
+    return reply.code(404).send({ error: 'Template not found', requestId: request.id });
   }
 });
 
 app.get('/v1/reports/download', async (request, reply) => {
   const query = request.query as { key?: string };
-  if (!query.key) return reply.code(400).send({ error: 'Report key is required' });
+  if (!query.key) {
+    return reply.code(400).send({ error: 'Report key is required', requestId: request.id });
+  }
 
   const storageRoot = resolve(env.STORAGE_DIR);
   const filePath = resolve(storageRoot, query.key);
   if (!filePath.startsWith(`${storageRoot}${sep}`)
     || extname(filePath).toLowerCase() !== '.docx') {
-    return reply.code(400).send({ error: 'Invalid report key' });
+    return reply.code(400).send({ error: 'Invalid report key', requestId: request.id });
   }
 
   try {
@@ -387,16 +470,24 @@ app.get('/v1/reports/download', async (request, reply) => {
       .header('Content-Disposition', `attachment; filename="${basename(filePath)}"`)
       .send(file);
   } catch {
-    return reply.code(404).send({ error: 'Report not found' });
+    return reply.code(404).send({ error: 'Report not found', requestId: request.id });
   }
 });
 
 app.setErrorHandler((error, request, reply) => {
-  request.log.error({ err: error }, 'request failed');
   const resolved = resolveHttpError(error);
+  const diagnostic = toExtractionErrorLog({
+    error,
+    requestId: request.id,
+    file: 'request',
+    fallbackStage: 'UNKNOWN',
+    includeStack: true
+  });
+  request.log.error({ err: error, diagnostic }, 'request failed');
   reply.code(resolved.statusCode).send({
     error: resolved.statusCode === 500 ? 'Internal server error' : resolved.message,
-    requestId: request.id
+    requestId: request.id,
+    diagnostic
   });
 });
 
