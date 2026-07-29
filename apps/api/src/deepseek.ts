@@ -150,15 +150,25 @@ function relevantExcerpt(text: string, type: SupportedDocumentType) {
     else merged.push([...range]);
   }
 
-  return merged.map(([start, end]) => text.slice(start, end)).join('\n\n--- SOURCE WINDOW ---\n\n').slice(0, 120_000);
+  return merged
+    .map(([start, end]) => text.slice(start, end))
+    .join('\n\n--- SOURCE WINDOW ---\n\n')
+    .slice(0, 120_000);
 }
 
-function promptFor(type: SupportedDocumentType) {
+function promptFor(type: SupportedDocumentType, combinedGstr1 = false) {
   if (type === 'ITR_ACKNOWLEDGEMENT' || type === 'ITR_FULL') {
     return `${COMMON_RULES}\n${ITR_RULES}\nReturn every required field for ${type}. Use empty arrays for relationships, auditRecords, statementValues and provenance when absent.`;
   }
   if (type === 'GSTR_1' || type === 'GSTR_1A' || type === 'GSTR_3B') {
-    return `${COMMON_RULES}\n${GST_RULES}\nReturn every required field for ${type}. Tax vectors contain igst, cgst, sgst and cess.`;
+    const combinedRule = combinedGstr1
+      ? type === 'GSTR_1'
+        ? '\nThis is a combined GSTR-1/GSTR-1A summary. Extract only the base GSTR-1 column, excluding the GSTR-1A adjustment.'
+        : type === 'GSTR_1A'
+          ? '\nThis is a combined GSTR-1/GSTR-1A summary. Extract only the GSTR-1A differential/adjustment column, not the combined final total.'
+          : ''
+      : '';
+    return `${COMMON_RULES}\n${GST_RULES}${combinedRule}\nReturn every required field for ${type}. Tax vectors contain igst, cgst, sgst and cess.`;
   }
   return `${COMMON_RULES}\n${FINANCIAL_RULES}\nReturn every required field for AUDITED_FINANCIAL_STATEMENTS.`;
 }
@@ -174,17 +184,76 @@ function schemaFor(type: SupportedDocumentType) {
   }
 }
 
-export async function extractDocumentWithDeepSeek(text: string, originalName = ''): Promise<DocumentExtraction> {
+function logicalGstChunks(text: string, type: SupportedDocumentType) {
+  if (type !== 'GSTR_1' && type !== 'GSTR_1A' && type !== 'GSTR_3B') return [text];
+
+  const pattern = type === 'GSTR_3B'
+    ? /FORM\s+GSTR-3B\b/gi
+    : /FORM\s+GSTR-1\b(?!A)|CONSOLIDATED\s+SUMMARY\s+OF\s+GSTR-1\s+AND\s+GSTR-1A/gi;
+  const starts = [...text.matchAll(pattern)].map((match) => match.index ?? 0);
+  const uniqueStarts = [...new Set(starts)].sort((a, b) => a - b);
+  if (uniqueStarts.length <= 1) return [text];
+
+  return uniqueStarts.map((start, index) => {
+    const end = uniqueStarts[index + 1] ?? text.length;
+    return text.slice(start, end);
+  }).filter((chunk) => chunk.trim().length > 100);
+}
+
+async function extractSingleDocument(
+  text: string,
+  documentType: SupportedDocumentType,
+  originalName: string,
+  combinedGstr1 = false
+): Promise<DocumentExtraction> {
+  const excerpt = relevantExcerpt(text, documentType);
+  const value = await requestJson(
+    promptFor(documentType, combinedGstr1),
+    JSON.stringify({ documentType, originalName, sourceText: excerpt })
+  );
+  return documentExtractionSchema.parse(schemaFor(documentType).parse(value));
+}
+
+export async function extractDocumentsWithDeepSeek(
+  text: string,
+  originalName = ''
+): Promise<DocumentExtraction[]> {
   const detected = detectDocumentType(text, originalName);
   const documentType = detected === 'UNKNOWN'
     ? await classifyUnknownDocument(text, originalName)
     : detected;
-  const excerpt = relevantExcerpt(text, documentType);
-  const value = await requestJson(
-    promptFor(documentType),
-    JSON.stringify({ documentType, originalName, sourceText: excerpt })
-  );
-  return documentExtractionSchema.parse(schemaFor(documentType).parse(value));
+  const chunks = logicalGstChunks(text, documentType);
+  const documents: DocumentExtraction[] = [];
+
+  for (const [index, chunk] of chunks.entries()) {
+    const combined = /CONSOLIDATED\s+SUMMARY\s+OF\s+GSTR-1\s+AND\s+GSTR-1A/i.test(chunk);
+    const logicalName = chunks.length > 1 ? `${originalName}#${index + 1}` : originalName;
+
+    if (combined) {
+      documents.push(await extractSingleDocument(chunk, 'GSTR_1', logicalName, true));
+      documents.push(await extractSingleDocument(chunk, 'GSTR_1A', logicalName, true));
+      continue;
+    }
+
+    const chunkType = chunks.length > 1
+      ? detectDocumentType(chunk, logicalName)
+      : documentType;
+    const resolvedType = chunkType === 'UNKNOWN' ? documentType : chunkType;
+    documents.push(await extractSingleDocument(chunk, resolvedType, logicalName));
+  }
+
+  if (documents.length === 0) throw new Error('No logical document could be extracted');
+  return documents;
+}
+
+export async function extractDocumentWithDeepSeek(
+  text: string,
+  originalName = ''
+): Promise<DocumentExtraction> {
+  const documents = await extractDocumentsWithDeepSeek(text, originalName);
+  const first = documents[0];
+  if (!first) throw new Error('No document was extracted');
+  return first;
 }
 
 export async function extractItrWithDeepSeek(text: string): Promise<ItrExtraction> {
