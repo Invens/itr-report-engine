@@ -5,6 +5,7 @@ import {
   type ReportRow,
   type ReportTemplateConfig,
   type StatementValue,
+  type TaxCreditSummary,
   type TaxVector
 } from '@itr/contracts';
 import {
@@ -26,6 +27,10 @@ export type DraftIssue = {
   severity: 'WARNING' | 'REVIEW_REQUIRED';
   message: string;
   documentIds: string[];
+  entityPan?: string;
+  assessmentYear?: string;
+  amount?: number;
+  section?: string;
 };
 
 type ItrAcknowledgementExtraction = Extract<DocumentExtraction, { documentType: 'ITR_ACKNOWLEDGEMENT' }>;
@@ -36,15 +41,18 @@ type GstDocumentExtraction =
   | Extract<DocumentExtraction, { documentType: 'GSTR_1A' }>
   | Extract<DocumentExtraction, { documentType: 'GSTR_3B' }>;
 type AuditedExtraction = Extract<DocumentExtraction, { documentType: 'AUDITED_FINANCIAL_STATEMENTS' }>;
+type TdsExtraction = Extract<DocumentExtraction, { documentType: 'TDS_STATEMENT' }>;
 
 type ItrSourceDocument = DraftSourceDocument & { extraction: ItrDocumentExtraction };
 type FullItrSourceDocument = DraftSourceDocument & { extraction: FullItrExtraction };
 type GstSourceDocument = DraftSourceDocument & { extraction: GstDocumentExtraction };
 type AuditedSourceDocument = DraftSourceDocument & { extraction: AuditedExtraction };
+type TdsSourceDocument = DraftSourceDocument & { extraction: TdsExtraction };
 
 type FinancialSection = StatementValue['section'];
 type FinancialComparisonRow = NonNullable<ConsolidatedReport['balanceSheet']>['rows'][number];
 type RelationshipStatus = ConsolidatedReport['itrSections'][number]['relationshipStatus'];
+type TaxCreditKey = Exclude<keyof TaxCreditSummary, 'total'>;
 
 function isItrDocument(item: DraftSourceDocument): item is ItrSourceDocument {
   return item.extraction.documentType === 'ITR_ACKNOWLEDGEMENT'
@@ -63,6 +71,10 @@ function isGstDocument(item: DraftSourceDocument): item is GstSourceDocument {
 
 function isAuditedDocument(item: DraftSourceDocument): item is AuditedSourceDocument {
   return item.extraction.documentType === 'AUDITED_FINANCIAL_STATEMENTS';
+}
+
+function isTdsDocument(item: DraftSourceDocument): item is TdsSourceDocument {
+  return item.extraction.documentType === 'TDS_STATEMENT';
 }
 
 function isGstr1(item: GstSourceDocument): item is GstSourceDocument & {
@@ -105,6 +117,15 @@ function latestByArnDate<T extends GstSourceDocument>(values: T[]): T | undefine
     .sort((a, b) => b.extraction.arnDate.localeCompare(a.extraction.arnDate))[0];
 }
 
+function latestItrDocument(values: ItrSourceDocument[]) {
+  return [...values].sort((a, b) => {
+    const dateDifference = b.extraction.filingDate.localeCompare(a.extraction.filingDate);
+    if (dateDifference !== 0) return dateDifference;
+    const rank = { UNKNOWN: 0, ORIGINAL: 1, BELATED: 2, REVISED: 3, UPDATED: 4 } as const;
+    return rank[b.extraction.filingType] - rank[a.extraction.filingType];
+  })[0];
+}
+
 function taxVectorOrZero(value?: TaxVector): TaxVector {
   return value ?? { igst: 0, cgst: 0, sgst: 0, cess: 0 };
 }
@@ -124,6 +145,13 @@ const SECTION_ORDER: Record<FinancialSection, number> = {
   LIABILITIES: 0,
   ASSETS: 1,
   PROFIT_AND_LOSS: 2
+};
+
+const TAX_CREDIT_LABELS: Record<TaxCreditKey, string> = {
+  tds: 'TDS',
+  tcs: 'TCS',
+  advanceTax: 'advance tax',
+  selfAssessmentTax: 'self-assessment tax'
 };
 
 function financialSortKey(key: string) {
@@ -183,8 +211,7 @@ export function buildConsolidatedDraft(
   }
 
   const itrSections: ConsolidatedReport['itrSections'] = [...itrGroups.entries()].map(([pan, items]) => {
-    const latestDocument = [...items]
-      .sort((a, b) => b.extraction.filingDate.localeCompare(a.extraction.filingDate))[0];
+    const latestDocument = latestItrDocument(items);
     if (!latestDocument) throw new Error(`No ITR return found for PAN ${pan}`);
     const latest = latestDocument.extraction;
     const relation = verifiedRelationships.get(pan);
@@ -199,7 +226,8 @@ export function buildConsolidatedDraft(
         code: 'DIRECTOR_RELATIONSHIP_UNVERIFIED',
         severity: 'WARNING',
         message: `${latest.name} is included in the company bundle but no PAN-matched director relationship was found in the supplied company ITR.`,
-        documentIds: items.map((item) => item.documentId)
+        documentIds: items.map((item) => item.documentId),
+        entityPan: pan
       });
     }
 
@@ -252,7 +280,9 @@ export function buildConsolidatedDraft(
           code: 'GST_RETURN_PAIR_MISSING',
           severity: 'REVIEW_REQUIRED',
           message: `${gstin} ${period} does not contain both GSTR-1 and GSTR-3B.`,
-          documentIds: periodItems.map((item) => item.documentId)
+          documentIds: periodItems.map((item) => item.documentId),
+          entityPan: companyPan,
+          section: 'GST_RECONCILIATION'
         });
         continue;
       }
@@ -268,8 +298,11 @@ export function buildConsolidatedDraft(
         issues.push({
           code: 'GST_RECONCILIATION_MISMATCH',
           severity: 'REVIEW_REQUIRED',
-          message: `${gstin} ${period} GSTR-1 and GSTR-3B outward values differ by ${comparison.difference?.toFixed(2)}.`,
-          documentIds: periodItems.map((item) => item.documentId)
+          message: `${gstin} ${period} GSTR-1 and GSTR-3B outward values differ by ₹${Math.abs(comparison.difference ?? 0).toLocaleString('en-IN')}.`,
+          documentIds: periodItems.map((item) => item.documentId),
+          entityPan: companyPan,
+          amount: Math.abs(comparison.difference ?? 0),
+          section: 'GST_RECONCILIATION'
         });
       }
 
@@ -326,7 +359,11 @@ export function buildConsolidatedDraft(
           code: 'ITR_FINANCIAL_STATEMENT_MISMATCH',
           severity: 'REVIEW_REQUIRED',
           message: `${statement?.label ?? itr?.label ?? key} differs between audited financial statements and ITR-6 by ₹${Math.abs(comparison.difference ?? 0).toLocaleString('en-IN')}.`,
-          documentIds: [audited.documentId, fullItr.documentId]
+          documentIds: [audited.documentId, fullItr.documentId],
+          entityPan: companyPan,
+          assessmentYear: fullItr.extraction.assessmentYear,
+          amount: Math.abs(comparison.difference ?? 0),
+          section: statement?.section ?? itr?.section ?? 'FINANCIAL_STATEMENTS'
         });
       }
 
@@ -358,8 +395,62 @@ export function buildConsolidatedDraft(
       severity: 'WARNING',
       message: 'Both audited financial statements and the company full ITR are required for Balance Sheet/P&L comparison.',
       documentIds: [audited?.documentId, fullItr?.documentId]
-        .filter((value): value is string => Boolean(value))
+        .filter((value): value is string => Boolean(value)),
+      entityPan: companyPan,
+      section: 'FINANCIAL_STATEMENTS'
     });
+  }
+
+  const taxStatements = documents.filter(isTdsDocument);
+  for (const statement of taxStatements) {
+    const matchingItrs = itrDocuments.filter((item) => (
+      item.extraction.pan === statement.extraction.pan
+      && item.extraction.assessmentYear === statement.extraction.assessmentYear
+    ));
+    const matchedItr = latestItrDocument(matchingItrs);
+
+    if (!matchedItr) {
+      issues.push({
+        code: 'TAX_STATEMENT_ITR_MISSING',
+        severity: 'WARNING',
+        message: `Form 26AS for ${statement.extraction.name}, PAN ${statement.extraction.pan}, A.Y. ${statement.extraction.assessmentYear} has no matching ITR in this bundle.`,
+        documentIds: [statement.documentId],
+        entityPan: statement.extraction.pan,
+        assessmentYear: statement.extraction.assessmentYear,
+        section: 'TAX_CREDITS'
+      });
+      continue;
+    }
+
+    for (const key of ['tds', 'tcs', 'advanceTax', 'selfAssessmentTax'] as TaxCreditKey[]) {
+      const statementAmount = statement.extraction.taxCredits[key];
+      const itrAmount = matchedItr.extraction.taxCredits[key];
+      const comparison = compareAmounts(statementAmount, itrAmount, 1);
+      if (comparison.status !== 'MISMATCH') continue;
+
+      const difference = statementAmount - itrAmount;
+      const isMissingSelfAssessment = key === 'selfAssessmentTax'
+        && itrAmount > statementAmount;
+      const code = isMissingSelfAssessment
+        ? 'SELF_ASSESSMENT_CHALLAN_NOT_FOUND'
+        : key === 'tds'
+          ? 'TDS_RECONCILIATION_MISMATCH'
+          : 'TAX_CREDIT_RECONCILIATION_MISMATCH';
+      const description = isMissingSelfAssessment
+        ? `Self-assessment tax of ₹${itrAmount.toLocaleString('en-IN')} is claimed in the ITR but only ₹${statementAmount.toLocaleString('en-IN')} is visible in Form 26AS.`
+        : `${TAX_CREDIT_LABELS[key]} differs for ${statement.extraction.name}, A.Y. ${statement.extraction.assessmentYear}: Form 26AS ₹${statementAmount.toLocaleString('en-IN')} versus ITR ₹${itrAmount.toLocaleString('en-IN')}.`;
+
+      issues.push({
+        code,
+        severity: 'REVIEW_REQUIRED',
+        message: description,
+        documentIds: [statement.documentId, matchedItr.documentId],
+        entityPan: statement.extraction.pan,
+        assessmentYear: statement.extraction.assessmentYear,
+        amount: Math.abs(difference),
+        section: 'TAX_CREDITS'
+      });
+    }
   }
 
   const subjectEntities = itrSections.map((section) => ({
@@ -369,8 +460,11 @@ export function buildConsolidatedDraft(
   const remarks = issues
     .filter((issue) => issue.severity === 'REVIEW_REQUIRED')
     .map((issue) => ({
-      entityPan: companyPan,
+      entityPan: issue.entityPan ?? companyPan,
+      assessmentYear: issue.assessmentYear,
       type: issue.code,
+      section: issue.section,
+      amount: issue.amount,
       severity: 'REVIEW_REQUIRED' as const,
       text: issue.message
     }));
