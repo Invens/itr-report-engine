@@ -1,0 +1,83 @@
+.mode-switcher {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.mode-button {
+  display: grid;
+  gap: 5px;
+  padding: 17px 18px;
+  color: #49556a;
+  background: #fff;
+  border: 1px solid #dde3ec;
+  border-radius: 14px;
+  text-align: left;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, .035);
+}
+
+.mode-button strong { font-size: 14px; }
+.mode-button span { color: #7b8495; font-size: 12px; line-height: 1.45; }
+.mode-button.active {
+  color: #4f3cd0;
+  border-color: #9e92f4;
+  background: linear-gradient(180deg, #faf9ff, #f3f0ff);
+  box-shadow: 0 0 0 3px rgba(108, 89, 239, .09);
+}
+
+.bundle-panel,
+.review-panel {
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.review-issues {
+  display: grid;
+  gap: 8px;
+  padding: 16px 20px 0;
+}
+
+.review-issue {
+  display: grid;
+  gap: 3px;
+  padding: 11px 13px;
+  border: 1px solid #f0d6ae;
+  border-radius: 10px;
+  color: #8a4a08;
+  background: #fff8ec;
+}
+
+.review-issue.critical {
+  color: #a52b22;
+  border-color: #ffc6c1;
+  background: #fff0ef;
+}
+
+.review-issue strong { font-size: 11px; letter-spacing: .04em; }
+.review-issue span { font-size: 12px; line-height: 1.5; }
+
+.json-editor {
+  width: calc(100% - 40px);
+  min-height: 560px;
+  margin: 18px 20px 20px;
+  padding: 16px;
+  color: #e5e7eb;
+  background: #101827;
+  border: 1px solid #273248;
+  border-radius: 12px;
+  outline: none;
+  resize: vertical;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  tab-size: 2;
+}
+
+.json-editor:focus {
+  border-color: #7767ed;
+  box-shadow: 0 0 0 3px rgba(111, 91, 239, .12);
+}
+
+@media (max-width: 760px) {
+  .mode-switcher { grid-template-columns: 1fr; }
+  .json-editor { width: calc(100% - 24px); margin-inline: 12px; min-height: 420px; }
+}
