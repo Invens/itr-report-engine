@@ -185,6 +185,9 @@ export function normalizeItrModelOutput(input: unknown, documentType: ItrDocumen
   if (!value) return input;
 
   const pan = asString(value.pan)?.toUpperCase();
+  const normalizedEntityType = entityType(value, pan);
+  const normalizedFormType = asString(value.formType ?? value.formNumber);
+  const normalizedFilingDate = asString(value.filingDate ?? value.dateOfFiling);
   const evidenceResult = normalizeEvidence(value.evidence);
   const suppliedConfidence = asRecord(value.confidence) ?? {};
   const confidence: Record<string, number> = {};
@@ -220,27 +223,19 @@ export function normalizeItrModelOutput(input: unknown, documentType: ItrDocumen
   return {
     ...value,
     documentType,
-    ...(entityType(value, pan) ? { entityType: entityType(value, pan) } : {}),
-    ...(pan ? { pan } : {}),
-    ...(asString(value.formType ?? value.formNumber)
-      ? { formType: asString(value.formType ?? value.formNumber) }
-      : {}),
-    ...(asString(value.filingDate ?? value.dateOfFiling)
-      ? { filingDate: asString(value.filingDate ?? value.dateOfFiling) }
-      : {}),
+    entityType: normalizedEntityType,
+    pan,
+    formType: normalizedFormType,
+    filingDate: normalizedFilingDate,
     filingType: normalizedFilingType,
-    ...(normalizedFilingSection ? { filingSection: normalizedFilingSection } : {}),
-    ...(amounts.currentYearBusinessLoss !== undefined
-      ? { currentYearBusinessLoss: amounts.currentYearBusinessLoss }
-      : {}),
-    ...(amounts.totalIncome !== undefined ? { totalIncome: amounts.totalIncome } : {}),
-    ...(amounts.totalTaxInterestFeePayable !== undefined
-      ? { totalTaxInterestFeePayable: amounts.totalTaxInterestFeePayable }
-      : {}),
-    ...(amounts.totalTaxesPaid !== undefined ? { totalTaxesPaid: amounts.totalTaxesPaid } : {}),
-    ...(refundOrDemand !== undefined ? { refundOrDemand } : {}),
-    ...(originalAcknowledgementNumber ? { originalAcknowledgementNumber } : {}),
-    ...(originalFilingDate ? { originalFilingDate } : {}),
+    filingSection: normalizedFilingSection,
+    currentYearBusinessLoss: amounts.currentYearBusinessLoss,
+    totalIncome: amounts.totalIncome,
+    totalTaxInterestFeePayable: amounts.totalTaxInterestFeePayable,
+    totalTaxesPaid: amounts.totalTaxesPaid,
+    refundOrDemand,
+    originalAcknowledgementNumber,
+    originalFilingDate,
     relationships: Array.isArray(value.relationships) ? value.relationships : [],
     auditRecords: Array.isArray(value.auditRecords) ? value.auditRecords : [],
     statementValues: Array.isArray(value.statementValues) ? value.statementValues : [],
