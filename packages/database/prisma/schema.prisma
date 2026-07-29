@@ -36,6 +36,7 @@ enum ReportStatus {
 
 enum FilingType {
   ORIGINAL
+  BELATED
   REVISED
   UPDATED
   UNKNOWN
