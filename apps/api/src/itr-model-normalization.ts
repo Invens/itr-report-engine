@@ -123,28 +123,49 @@ function entityType(value: JsonRecord, pan: string | undefined) {
   return undefined;
 }
 
-function filingType(value: JsonRecord): FilingType {
-  const supplied = asString(value.filingType ?? value.filedUnderSection)?.toUpperCase() ?? '';
-  if (supplied === 'ORIGINAL' || supplied === 'BELATED' || supplied === 'REVISED'
-    || supplied === 'UPDATED' || supplied === 'UNKNOWN') return supplied;
-  if (supplied.includes('139(8A)') || supplied.includes('UPDATED')) return 'UPDATED';
-  if (supplied.includes('139(5)') || supplied.includes('REVISED')) return 'REVISED';
-  if (supplied.includes('139(4)') || supplied.includes('BELATED')) return 'BELATED';
-  if (supplied.includes('139(1)') || supplied.includes('ORIGINAL')) return 'ORIGINAL';
+function filingType(value: JsonRecord, evidence: Record<string, string>): FilingType {
+  const candidates = [
+    asString(value.filingType),
+    asString(value.filedUnderSection),
+    evidence.filingType
+  ].filter((item): item is string => Boolean(item));
+
+  for (const candidate of candidates) {
+    const supplied = candidate.toUpperCase();
+    if (supplied === 'ORIGINAL' || supplied === 'BELATED' || supplied === 'REVISED'
+      || supplied === 'UPDATED' || supplied === 'UNKNOWN') return supplied;
+    if (supplied.includes('139(8A)') || supplied.includes('UPDATED')) return 'UPDATED';
+    if (supplied.includes('139(5)') || supplied.includes('REVISED')) return 'REVISED';
+    if (supplied.includes('139(4)') || supplied.includes('BELATED')) return 'BELATED';
+    if (supplied.includes('139(1)') || supplied.includes('ORIGINAL')) return 'ORIGINAL';
+  }
   return 'UNKNOWN';
 }
 
-function filingSection(value: JsonRecord): string | undefined {
-  const supplied = asString(value.filingSection ?? value.filedUnderSection);
-  if (!supplied) return undefined;
-  const match = supplied.match(/139\s*\(\s*(1|4|5|8A)\s*\)/i);
-  return match ? `139(${match[1].toUpperCase()})` : undefined;
+function filingSection(value: JsonRecord, evidence: Record<string, string>): string | undefined {
+  const candidates = [
+    asString(value.filingSection),
+    asString(value.filedUnderSection),
+    evidence.filingType
+  ];
+  for (const candidate of candidates) {
+    const match = candidate?.match(/139\s*\(\s*(1|4|5|8A)\s*\)/i);
+    if (match) return `139(${match[1].toUpperCase()})`;
+  }
+  return undefined;
 }
 
 function trailingAmountToken(snippet: string | undefined) {
   if (!snippet) return undefined;
   const match = snippet.match(/([0-9][0-9,]*(?:\.[0-9]+)?)\s*$/);
   return match?.[1];
+}
+
+function stripRowPrefix(value: number, row: string) {
+  if (value < 0 || !Number.isInteger(value)) return undefined;
+  const text = String(value);
+  if (!text.startsWith(row) || text.length <= row.length) return undefined;
+  return asNumber(text.slice(row.length));
 }
 
 function normalizeAcknowledgementAmounts(
@@ -167,10 +188,19 @@ function normalizeAcknowledgementAmounts(
 
   const normalized = { ...values };
   for (const item of candidates) {
-    if (!item.matchesModel || !item.hasPrefix || !item.token) continue;
-    const stripped = item.token.slice(item.row.length);
-    const corrected = asNumber(stripped);
-    if (corrected !== undefined) normalized[item.field] = corrected;
+    if (item.matchesModel && item.hasPrefix && item.token) {
+      const corrected = asNumber(item.token.slice(item.row.length));
+      if (corrected !== undefined) normalized[item.field] = corrected;
+      continue;
+    }
+
+    // Once the pattern is proven by at least three evidence-backed fields, clean a
+    // matching row prefix from another standard acknowledgement field even when
+    // DeepSeek omitted that field's evidence snippet (for example row 1 value "10" = 1 + 0).
+    if (item.amount !== undefined) {
+      const corrected = stripRowPrefix(item.amount, item.row);
+      if (corrected !== undefined) normalized[item.field] = corrected;
+    }
   }
   return normalized;
 }
@@ -216,8 +246,8 @@ export function normalizeItrModelOutput(input: unknown, documentType: ItrDocumen
 
   const originalAcknowledgementNumber = asString(value.originalAcknowledgementNumber);
   const originalFilingDate = asString(value.originalFilingDate);
-  const normalizedFilingType = filingType(value);
-  const normalizedFilingSection = filingSection(value);
+  const normalizedFilingType = filingType(value, evidenceResult.record);
+  const normalizedFilingSection = filingSection(value, evidenceResult.record);
   const refundOrDemand = asNumber(value.refundOrDemand ?? value.taxPayableOrRefundable);
 
   return {
