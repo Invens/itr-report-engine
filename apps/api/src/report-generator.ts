@@ -28,10 +28,12 @@ import {
   sortTaxPeriods
 } from './report-rules.js';
 
+type ParagraphAlignment = typeof AlignmentType[keyof typeof AlignmentType];
+
 const inr = (value: number) => `${formatIndianAmount(value, 0)}/-`;
 const decimalAmount = (value: number) => formatIndianAmount(value, 2);
 
-function cell(text: string, bold = false, alignment: AlignmentType = AlignmentType.CENTER) {
+function cell(text: string, bold = false, alignment: ParagraphAlignment = AlignmentType.CENTER) {
   return new TableCell({
     children: [new Paragraph({
       alignment,
@@ -59,7 +61,8 @@ function spacer() {
 
 function monthName(period: string) {
   const [year, month] = period.split('-').map(Number);
-  return new Intl.DateTimeFormat('en-IN', { month: 'long' }).format(new Date(Date.UTC(year, month - 1, 1)));
+  return new Intl.DateTimeFormat('en-IN', { month: 'long' })
+    .format(new Date(Date.UTC(year, month - 1, 1)));
 }
 
 function templateHeader(data: Pick<ConsolidatedReport, 'udin' | 'reference' | 'reportDate' | 'bankName' | 'branchName' | 'address'>) {
@@ -132,7 +135,11 @@ function gstTable(section: ConsolidatedReport['gstSections'][number]) {
         ].map((value) => cell(value, true))
       }),
       ...rows.map((row, index) => {
-        const comparison = compareAmounts(row.gstr1TotalOutwardValue, row.gstr3bTotalOutwardValue, 0.01);
+        const comparison = compareAmounts(
+          row.gstr1TotalOutwardValue,
+          row.gstr3bTotalOutwardValue,
+          0.01
+        );
         const remark = comparison.status === 'MISMATCH'
           ? decimalAmount(comparison.difference ?? 0)
           : '-';
@@ -195,7 +202,11 @@ function balanceSheetTable(section: NonNullable<ConsolidatedReport['balanceSheet
     }));
 
     for (const row of groupRows) {
-      const comparison = compareAmounts(row.statementValueRupees, row.itrValueRupees, section.toleranceRupees);
+      const comparison = compareAmounts(
+        row.statementValueRupees,
+        row.itrValueRupees,
+        section.toleranceRupees
+      );
       let remark = '-';
       if (comparison.status === 'MISSING_SOURCE') remark = 'Review source';
       if (comparison.status === 'MISMATCH') {
@@ -210,7 +221,11 @@ function balanceSheetTable(section: NonNullable<ConsolidatedReport['balanceSheet
           financialDisplay(row.statementValueRupees, section.displayUnit),
           financialDisplay(row.itrValueRupees, section.displayUnit),
           remark
-        ].map((value, index) => cell(value, false, index === 1 ? AlignmentType.LEFT : AlignmentType.CENTER))
+        ].map((value, index) => cell(
+          value,
+          false,
+          index === 1 ? AlignmentType.LEFT : AlignmentType.CENTER
+        ))
       }));
       serial += 1;
     }
@@ -248,7 +263,9 @@ async function persistDocument(doc: Document, safeName: string, suffix: string) 
 
 export async function generateIndividualReport(input: IndividualReport) {
   const data = individualReportSchema.parse(input);
-  const assessmentYears = selectLatestItrRows(data.rows).map((row) => `A.Y. ${row.assessmentYear}`).join(' & ');
+  const assessmentYears = selectLatestItrRows(data.rows)
+    .map((row) => `A.Y. ${row.assessmentYear}`)
+    .join(' & ');
   const doc = new Document({
     sections: [{
       properties: { page: { margin: { top: 720, right: 500, bottom: 720, left: 500 } } },
@@ -277,7 +294,9 @@ export async function generateIndividualReport(input: IndividualReport) {
 
 export async function generateConsolidatedReport(input: ConsolidatedReport) {
   const data = consolidatedReportSchema.parse(input);
-  const subject = data.subjectEntities.map((entity, index) => `${index + 1}. ${entity.name}`).join('\n');
+  const subject = data.subjectEntities
+    .map((entity, index) => `${index + 1}. ${entity.name}`)
+    .join('\n');
   const children: Array<Paragraph | Table> = [
     ...templateHeader(data),
     new Paragraph({
@@ -289,7 +308,9 @@ export async function generateConsolidatedReport(input: ConsolidatedReport) {
   ];
 
   for (const section of data.itrSections) {
-    const years = selectLatestItrRows(section.rows).map((row) => `A.Y. ${row.assessmentYear}`).join(' & ');
+    const years = selectLatestItrRows(section.rows)
+      .map((row) => `A.Y. ${row.assessmentYear}`)
+      .join(' & ');
     children.push(
       heading(`${section.sectionLabel}: ${section.clientName.toUpperCase()} — PAN ${section.pan}`),
       new Paragraph(`As per your instructions we have verified acknowledgement number of Income Tax Return filed with the Income Tax Department www.incometax.gov.in for ${years} of ${section.clientName.toUpperCase()} having PAN No. ${section.pan}.`),
