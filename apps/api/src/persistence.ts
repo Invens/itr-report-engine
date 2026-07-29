@@ -68,7 +68,9 @@ function identityFromExtraction(extraction: DocumentExtraction): EntityIdentity 
       cin: extraction.cin
     };
   }
-  if (extraction.documentType === 'GSTR_1' || extraction.documentType === 'GSTR_1A' || extraction.documentType === 'GSTR_3B') {
+  if (extraction.documentType === 'GSTR_1'
+    || extraction.documentType === 'GSTR_1A'
+    || extraction.documentType === 'GSTR_3B') {
     return {
       name: extraction.name,
       entityType: 'COMPANY',
@@ -92,13 +94,19 @@ async function findOrCreateClient(identity: EntityIdentity) {
       : identity.cin
         ? await prisma.clientEntity.findFirst({ where: { cin: identity.cin } })
         : await prisma.clientEntity.findFirst({
-          where: { name: { equals: identity.name, mode: 'insensitive' }, entityType: identity.entityType as EntityType }
+          where: {
+            name: { equals: identity.name, mode: 'insensitive' },
+            entityType: identity.entityType as EntityType
+          }
         });
 
   if (existing) {
     const name = chooseLegalName(existing.name, identity.name);
     const entityType = identity.entityType as EntityType;
-    if (name !== existing.name || existing.entityType !== entityType || (!existing.pan && identity.pan) || (!existing.cin && identity.cin)) {
+    if (name !== existing.name
+      || existing.entityType !== entityType
+      || (!existing.pan && identity.pan)
+      || (!existing.cin && identity.cin)) {
       return prisma.clientEntity.update({
         where: { id: existing.id },
         data: {
@@ -142,7 +150,9 @@ export async function ensureDefaultTemplate() {
   return prisma.reportTemplate.findUniqueOrThrow({ where: { key: 'individual-itr' } });
 }
 
-export async function getTemplateConfig(key: 'individual-itr' | 'company-consolidated'): Promise<ReportTemplateConfig> {
+export async function getTemplateConfig(
+  key: 'individual-itr' | 'company-consolidated'
+): Promise<ReportTemplateConfig> {
   await ensureDefaultTemplates();
   const template = await prisma.reportTemplate.findUniqueOrThrow({ where: { key } });
   return reportTemplateConfigSchema.parse(template.config);
@@ -197,7 +207,9 @@ function documentMetadata(extraction: DocumentExtraction) {
       taxesPaid: extraction.totalTaxesPaid
     };
   }
-  if (extraction.documentType === 'GSTR_1' || extraction.documentType === 'GSTR_1A' || extraction.documentType === 'GSTR_3B') {
+  if (extraction.documentType === 'GSTR_1'
+    || extraction.documentType === 'GSTR_1A'
+    || extraction.documentType === 'GSTR_3B') {
     return {
       assessmentYear: extraction.financialYear,
       acknowledgement: extraction.arn,
@@ -219,22 +231,44 @@ function documentMetadata(extraction: DocumentExtraction) {
   };
 }
 
-export async function persistDocumentExtraction(input: {
+type PersistBundleInput = {
   originalName: string;
   mimeType: string;
   storageKey: string;
   sha256: string;
-  extraction: DocumentExtraction;
-  issues: ValidationIssue[];
+  extractions: DocumentExtraction[];
+  issuesByExtraction: ValidationIssue[][];
   extractionMode?: 'PDF_TEXT' | 'OCR';
   pageCount?: number | null;
   ipAddress?: string;
-}) {
-  const client = await findOrCreateClient(identityFromExtraction(input.extraction));
-  const status = input.issues.length > 0 ? DocumentStatus.NEEDS_REVIEW : DocumentStatus.VERIFIED;
-  const metadata = documentMetadata(input.extraction);
+};
+
+export async function persistDocumentExtractionBundle(input: PersistBundleInput) {
+  const first = input.extractions[0];
+  if (!first) throw new Error('At least one logical extraction is required');
+  if (input.extractions.length !== input.issuesByExtraction.length) {
+    throw new Error('Every logical extraction must have a matching validation result');
+  }
+
+  const client = await findOrCreateClient(identityFromExtraction(first));
+  const allIssues = input.issuesByExtraction.flat();
+  const status = allIssues.length > 0 ? DocumentStatus.NEEDS_REVIEW : DocumentStatus.VERIFIED;
+  const metadata = documentMetadata(first);
+  const documentType = input.extractions.length === 1
+    ? first.documentType
+    : 'MULTI_DOCUMENT_BUNDLE';
+  const extractedPayload = input.extractions.length === 1
+    ? first
+    : input.extractions;
+  const confidencePayload = input.extractions.length === 1
+    ? first.confidence
+    : input.extractions.map((extraction) => extraction.confidence);
   const validationPayload = {
-    issues: input.issues,
+    logicalDocumentCount: input.extractions.length,
+    logicalDocuments: input.extractions.map((extraction, index) => ({
+      documentType: extraction.documentType,
+      issues: input.issuesByExtraction[index] ?? []
+    })),
     extractionMode: input.extractionMode ?? 'PDF_TEXT',
     pageCount: input.pageCount ?? null
   };
@@ -247,26 +281,27 @@ export async function persistDocumentExtraction(input: {
       storageKey: input.storageKey,
       sha256: input.sha256,
       status,
-      documentType: input.extraction.documentType,
+      documentType,
       ...metadata,
-      extractedJson: input.extraction as unknown as Prisma.InputJsonValue,
-      confidenceJson: input.extraction.confidence as Prisma.InputJsonValue,
+      extractedJson: extractedPayload as unknown as Prisma.InputJsonValue,
+      confidenceJson: confidencePayload as unknown as Prisma.InputJsonValue,
       validationJson: validationPayload as unknown as Prisma.InputJsonValue,
       clientEntityId: client.id
     },
     update: {
       originalName: input.originalName,
       status,
-      documentType: input.extraction.documentType,
+      documentType,
       ...metadata,
-      extractedJson: input.extraction as unknown as Prisma.InputJsonValue,
-      confidenceJson: input.extraction.confidence as Prisma.InputJsonValue,
+      extractedJson: extractedPayload as unknown as Prisma.InputJsonValue,
+      confidenceJson: confidencePayload as unknown as Prisma.InputJsonValue,
       validationJson: validationPayload as unknown as Prisma.InputJsonValue,
       errorMessage: null,
       clientEntityId: client.id
     }
   });
 
+  const identity = identityFromExtraction(first);
   await prisma.auditLog.create({
     data: {
       action: 'DOCUMENT_EXTRACTED',
@@ -275,10 +310,11 @@ export async function persistDocumentExtraction(input: {
       ipAddress: input.ipAddress,
       after: {
         originalName: input.originalName,
-        documentType: input.extraction.documentType,
-        clientName: identityFromExtraction(input.extraction).name,
-        pan: identityFromExtraction(input.extraction).pan,
-        issueCount: input.issues.length,
+        documentType,
+        logicalDocumentCount: input.extractions.length,
+        clientName: identity.name,
+        pan: identity.pan,
+        issueCount: allIssues.length,
         extractionMode: input.extractionMode ?? 'PDF_TEXT',
         status
       }
@@ -286,6 +322,30 @@ export async function persistDocumentExtraction(input: {
   });
 
   return document;
+}
+
+export async function persistDocumentExtraction(input: {
+  originalName: string;
+  mimeType: string;
+  storageKey: string;
+  sha256: string;
+  extraction: DocumentExtraction;
+  issues: ValidationIssue[];
+  extractionMode?: 'PDF_TEXT' | 'OCR';
+  pageCount?: number | null;
+  ipAddress?: string;
+}) {
+  return persistDocumentExtractionBundle({
+    originalName: input.originalName,
+    mimeType: input.mimeType,
+    storageKey: input.storageKey,
+    sha256: input.sha256,
+    extractions: [input.extraction],
+    issuesByExtraction: [input.issues],
+    extractionMode: input.extractionMode,
+    pageCount: input.pageCount,
+    ipAddress: input.ipAddress
+  });
 }
 
 export async function persistExtraction(input: {
@@ -303,18 +363,24 @@ export async function persistExtraction(input: {
 }
 
 export async function loadDocumentExtractions(documentIds: string[]): Promise<DraftSourceDocument[]> {
+  const uniqueDocumentIds = [...new Set(documentIds)];
   const documents = await prisma.document.findMany({
-    where: { id: { in: documentIds } },
+    where: { id: { in: uniqueDocumentIds } },
     select: { id: true, extractedJson: true }
   });
   const found = new Set(documents.map((document) => document.id));
-  const missing = documentIds.filter((id) => !found.has(id));
+  const missing = uniqueDocumentIds.filter((id) => !found.has(id));
   if (missing.length > 0) throw new Error(`Document records not found: ${missing.join(', ')}`);
 
-  return documents.map((document) => ({
-    documentId: document.id,
-    extraction: documentExtractionSchema.parse(document.extractedJson)
-  }));
+  return documents.flatMap((document) => {
+    const payloads = Array.isArray(document.extractedJson)
+      ? document.extractedJson
+      : [document.extractedJson];
+    return payloads.map((payload) => ({
+      documentId: document.id,
+      extraction: documentExtractionSchema.parse(payload)
+    }));
+  });
 }
 
 export async function persistGeneratedReport(input: {
