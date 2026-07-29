@@ -1,6 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import {
+  ExtractionErrorDetails,
+  type ExtractionErrorLog
+} from './ExtractionErrorDetails';
 
 type Tab = 'new' | 'reports' | 'audit' | 'templates';
 type ReportMode = 'individual' | 'consolidated';
@@ -43,6 +47,7 @@ type BundleExtractionResult = {
   issues: Issue[];
   requiresReview: boolean;
   error?: string;
+  errorLog?: ExtractionErrorLog;
 };
 
 type DraftIssue = {
@@ -222,7 +227,13 @@ export default function HomePage() {
   async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${apiUrl}${path}`, options);
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error ?? 'Request failed');
+    if (!response.ok) {
+      const requestId = body.requestId ? ` Request ID: ${body.requestId}.` : '';
+      const diagnostic = body.diagnostic
+        ? `\n${JSON.stringify(body.diagnostic, null, 2)}`
+        : '';
+      throw new Error(`${body.error ?? 'Request failed'}.${requestId}${diagnostic}`);
+    }
     return body as T;
   }
 
@@ -277,12 +288,17 @@ export default function HomePage() {
         setNotice(`${body.results.length} acknowledgement(s) extracted. Review every row before generating.`);
       } else {
         const body = await fetchJson<{
+          requestId: string;
           results: BundleExtractionResult[];
           failedCount: number;
+          successfulLogicalDocumentCount: number;
         }>('/v1/documents/extract-bundle', { method: 'POST', body: form });
         setBundleResults(body.results);
         setResults([]);
-        setNotice(`${body.results.length - body.failedCount} logical document(s) extracted; ${body.failedCount} physical file(s) failed. Build the draft after reviewing classifications.`);
+        setNotice(`${body.successfulLogicalDocumentCount} logical document(s) extracted; ${body.failedCount} physical file(s) failed. Request ID: ${body.requestId}.`);
+        if (body.failedCount > 0) {
+          setError('One or more files failed. Open “View error log” in the Review column to see the exact stage, error code, schema path, upstream response and stack trace.');
+        }
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Extraction failed');
@@ -514,7 +530,24 @@ export default function HomePage() {
           {reportMode === 'consolidated' && bundleResults.length > 0 && <section className="panel bundle-panel">
             <div className="panel-head"><div><h2>Classified bundle</h2><p>Check document type, entity, identifier and period before building the report draft.</p></div><button className="primary" disabled={!successfulBundleIds.length || busy} onClick={buildDraft}>Build review draft</button></div>
             <div className="table-wrap"><table><thead><tr><th>File</th><th>Document type</th><th>Entity</th><th>PAN/GSTIN/CIN</th><th>Period</th><th>Mode</th><th>Review</th></tr></thead><tbody>
-              {bundleResults.map((item) => { const summary = bundleSummary(item); return <tr key={item.id}><td><strong>{item.file}</strong></td><td>{summary.type}</td><td>{summary.entity}</td><td>{summary.identifier}</td><td>{summary.period}</td><td>{item.extractionMode ?? '—'}</td><td><span className={item.error || item.issues.length ? 'warning' : 'ok'}>{item.error ? 'Failed' : item.issues.length ? `${item.issues.length} issue(s)` : 'Ready'}</span></td></tr>; })}
+              {bundleResults.map((item) => {
+                const summary = bundleSummary(item);
+                return <tr key={item.id} className={item.errorLog ? 'failed-row' : undefined}>
+                  <td><strong>{item.file}</strong></td>
+                  <td>{summary.type}</td>
+                  <td>{summary.entity}</td>
+                  <td>{summary.identifier}</td>
+                  <td>{summary.period}</td>
+                  <td>{item.extractionMode ?? '—'}</td>
+                  <td>
+                    {item.errorLog
+                      ? <ExtractionErrorDetails log={item.errorLog} />
+                      : <span className={item.issues.length ? 'warning' : 'ok'}>
+                        {item.issues.length ? `${item.issues.length} issue(s)` : 'Ready'}
+                      </span>}
+                  </td>
+                </tr>;
+              })}
             </tbody></table></div>
           </section>}
 
