@@ -25,7 +25,11 @@ RUN pnpm db:generate \
 
 FROM base AS api-runtime
 ENV NODE_ENV=production
-RUN apk add --no-cache tini
+RUN apk add --no-cache \
+  tini \
+  poppler-utils \
+  tesseract-ocr \
+  tesseract-ocr-data-eng
 COPY --from=api-builder /app /app
 RUN mkdir -p /app/storage/uploads /app/storage/reports \
  && chown -R node:node /app/storage
