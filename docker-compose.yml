@@ -11,6 +11,9 @@ x-api-environment: &api-environment
   DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
   STORAGE_DIR: /app/storage
   MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+  MAX_BUNDLE_FILES: ${MAX_BUNDLE_FILES:-100}
+  OCR_MAX_PAGES: ${OCR_MAX_PAGES:-25}
+  OCR_DPI: ${OCR_DPI:-200}
 
 services:
   postgres:
