@@ -269,6 +269,18 @@ export const itrReportSectionSchema = z.object({
   rows: z.array(reportRowSchema).min(1)
 });
 
+export const multiIndividualReportSchema = z.object({
+  reportDate: z.string().min(8),
+  subjectEntities: z.array(z.object({
+    name: z.string().min(2),
+    pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/)
+  })).min(2),
+  itrSections: z.array(itrReportSectionSchema.extend({
+    entityType: z.literal('INDIVIDUAL')
+  })).min(2),
+  ...reportTemplateConfigSchema.shape
+});
+
 export const gstReconciliationRowSchema = z.object({
   period: z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])$/),
   gstr1TotalOutwardValue: z.number().finite(),
@@ -337,6 +349,7 @@ export type TdsStatementExtraction = z.infer<typeof tdsStatementExtractionSchema
 export type DocumentExtraction = z.infer<typeof documentExtractionSchema>;
 export type ReportRow = z.infer<typeof reportRowSchema>;
 export type IndividualReport = z.infer<typeof individualReportSchema>;
+export type MultiIndividualReport = z.infer<typeof multiIndividualReportSchema>;
 export type ConsolidatedReport = z.infer<typeof consolidatedReportSchema>;
 export type ReportTemplateConfig = z.infer<typeof reportTemplateConfigSchema>;
 export type ReportTemplateUpdate = z.infer<typeof reportTemplateUpdateSchema>;
