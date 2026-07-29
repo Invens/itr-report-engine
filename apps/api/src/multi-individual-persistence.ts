@@ -10,19 +10,19 @@ export async function persistGeneratedMultiIndividualReport(input: {
   const first = input.report.itrSections[0];
   if (!first) throw new Error('At least one individual ITR section is required');
 
-  const client = await prisma.clientEntity.upsert({
-    where: { id: `multi-individual:${first.pan}` },
-    create: {
-      id: `multi-individual:${first.pan}`,
-      name: first.clientName,
-      pan: first.pan,
-      entityType: EntityType.INDIVIDUAL
-    },
-    update: {
-      name: first.clientName,
-      entityType: EntityType.INDIVIDUAL
-    }
-  });
+  const existingClient = await prisma.clientEntity.findFirst({ where: { pan: first.pan } });
+  const client = existingClient
+    ? await prisma.clientEntity.update({
+      where: { id: existingClient.id },
+      data: { name: first.clientName, entityType: EntityType.INDIVIDUAL }
+    })
+    : await prisma.clientEntity.create({
+      data: {
+        name: first.clientName,
+        pan: first.pan,
+        entityType: EntityType.INDIVIDUAL
+      }
+    });
 
   const report = await prisma.report.create({
     data: {
