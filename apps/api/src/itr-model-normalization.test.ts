@@ -45,8 +45,17 @@ describe('ITR acknowledgement model normalization', () => {
         },
         { field: 'pan', snippet: 'PANALQPJ4174K', confidence: 1 },
         { field: 'name', snippet: 'NameSANKALP JAIN', confidence: 1 },
-        { field: 'currentYearBusinessLoss', snippet: 'Current Year business loss10', confidence: 1 },
         { field: 'totalIncome', snippet: 'Total Income222,03,600', confidence: 1 },
+        {
+          field: 'netTaxPayable',
+          snippet: 'Net tax payable53,75,523',
+          confidence: 1
+        },
+        {
+          field: 'interestAndFeePayable',
+          snippet: 'Interest and Fee Payable60',
+          confidence: 0.8
+        },
         {
           field: 'totalTaxInterestAndFeePayable',
           snippet: 'Total tax, interest and Fee payable73,75,523',
@@ -69,6 +78,7 @@ describe('ITR acknowledgement model normalization', () => {
     expect(parsed.entityType).toBe('INDIVIDUAL');
     expect(parsed.formType).toBe('ITR-3');
     expect(parsed.filingDate).toBe('2025-01-02');
+    expect(parsed.filingSection).toBe('139(5)');
     expect(parsed.filingType).toBe('REVISED');
     expect(parsed.currentYearBusinessLoss).toBe(0);
     expect(parsed.totalIncome).toBe(2_203_600);
