@@ -169,7 +169,25 @@ export function buildConsolidatedDraft(
   const companyCandidates = itrDocuments.filter((item) => item.extraction.entityType === 'COMPANY');
 
   if (companyCandidates.length === 0) {
-    throw new Error('A company ITR acknowledgement or full ITR is required for a consolidated company report');
+    const individualNames = [...new Set(
+      itrDocuments
+        .filter((item) => item.extraction.entityType === 'INDIVIDUAL')
+        .map((item) => `${item.extraction.name} (${item.extraction.pan})`)
+    )];
+    const detected = individualNames.length > 0
+      ? ` Detected individual return(s): ${individualNames.join(', ')}.`
+      : '';
+    throw Object.assign(
+      new Error(`This upload does not contain a company ITR. Company consolidated reports require at least one company ITR acknowledgement or full ITR.${detected} Use the Individual ITR workflow for personal returns.`),
+      {
+        statusCode: 422,
+        code: 'COMPANY_ITR_REQUIRED',
+        details: {
+          detectedIndividualTaxpayers: individualNames,
+          uploadedDocumentTypes: documents.map((item) => item.extraction.documentType)
+        }
+      }
+    );
   }
 
   const companyCounts = new Map<string, number>();
