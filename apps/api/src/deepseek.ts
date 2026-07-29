@@ -6,6 +6,7 @@ import {
   gstr1ExtractionSchema,
   gstr3BExtractionSchema,
   itrExtractionSchema,
+  tdsStatementExtractionSchema,
   type DocumentExtraction,
   type ItrExtraction
 } from '@itr/contracts';
@@ -17,14 +18,15 @@ const SUPPORTED_TYPES = [
   'GSTR_1',
   'GSTR_1A',
   'GSTR_3B',
-  'AUDITED_FINANCIAL_STATEMENTS'
+  'AUDITED_FINANCIAL_STATEMENTS',
+  'TDS_STATEMENT'
 ] as const;
 
 type SupportedDocumentType = typeof SUPPORTED_TYPES[number];
 
 const COMMON_RULES = `
 Return JSON only. Extract exact source values and never invent a missing value.
-Use the legal name printed in the return, PAN or audited statement, never a filename spelling.
+Use the legal name printed in the return, PAN, tax statement or audited statement, never a filename spelling.
 Keep every taxpayer isolated by PAN and every GST registration isolated by GSTIN.
 Dates should be ISO YYYY-MM-DD when possible. Money is in actual rupees unless a source unit is explicitly captured.
 Include evidence snippets and confidence values. Negative GST amendments and credit notes must remain negative.`;
@@ -34,6 +36,7 @@ Map filing sections semantically: 139(1)=ORIGINAL, 139(4)=BELATED, 139(5)=REVISE
 Do not map a belated return to REVISED. Total income is distinct from current-year business loss, accounting PBT and PAT.
 Use the labelled acknowledgement values, not fixed row numbers because acknowledgement layouts change.
 For a revised return, capture original acknowledgement metadata when the source supplies it.
+Extract TDS, TCS, advance tax and self-assessment tax separately into taxCredits. Their sum is taxCredits.total.
 For full ITRs, extract directors/key persons, tax-audit and statutory-audit records separately, and extract Part A-BS/Part A-P&L values with semantic keys.
 Accounting PBT, PAT and taxable business income are separate fields and must not be substituted.`;
 
@@ -49,6 +52,13 @@ const FINANCIAL_RULES = `
 Detect the printed statement unit exactly: RUPEES, HUNDREDS or LAKHS. Do not normalize or calculate in the model response.
 Extract Balance Sheet and Profit and Loss values by semantic key. Keep PBT, current-tax provision and PAT as separate values.
 Capture statutory financial-statement audit and tax-audit records separately; different dates or UDINs are not automatically errors.`;
+
+const TDS_RULES = `
+This is Form 26AS, an Annual Tax Statement or equivalent income-tax portal tax-credit statement.
+Extract the taxpayer name, PAN and assessment year from the statement itself.
+Aggregate tax credits separately as TDS, TCS, advance tax and self-assessment tax. Do not include refund entries as tax paid.
+Extract every visible advance-tax or self-assessment-tax challan with amount, date, BSR code and serial number when present.
+Do not infer a challan that is absent from the portal statement.`;
 
 function stripCodeFence(value: string) {
   return value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
@@ -89,6 +99,9 @@ export function detectDocumentType(text: string, originalName = ''): SupportedDo
   if (/FORM\s+GSTR-3B|GSTR\s*-?\s*3B/.test(sample)) return 'GSTR_3B';
   if (/CONSOLIDATED SUMMARY OF GSTR-1 AND GSTR-1A|FORM\s+GSTR-1A/.test(sample)) return 'GSTR_1A';
   if (/FORM\s+GSTR-1|DETAILS OF OUTWARD SUPPLIES OF GOODS OR SERVICES/.test(sample)) return 'GSTR_1';
+  if (/FORM\s*26AS|ANNUAL TAX STATEMENT|TAX CREDIT STATEMENT|TAX DEDUCTED AT SOURCE/.test(sample)) {
+    return 'TDS_STATEMENT';
+  }
   if (/INDIAN INCOME TAX RETURN ACKNOWLEDGEMENT|ITR-V|ACKNOWLEDGEMENT NUMBER/.test(sample)
     && !/PART A-BS|PART A-P&L|SCHEDULE BP/.test(sample)) return 'ITR_ACKNOWLEDGEMENT';
   if (/ITR-[1-7]|PART A-BS|PART A-P&L|SCHEDULE BP|AUDIT INFORMATION/.test(sample)) return 'ITR_FULL';
@@ -119,15 +132,20 @@ function relevantExcerpt(text: string, type: SupportedDocumentType) {
   if (text.length <= 120_000) return text;
 
   const keywords: Record<SupportedDocumentType, string[]> = {
-    ITR_ACKNOWLEDGEMENT: ['ACKNOWLEDGEMENT NUMBER', 'TOTAL INCOME', 'TOTAL TAX', 'TAXES PAID', 'REFUNDABLE'],
+    ITR_ACKNOWLEDGEMENT: [
+      'ACKNOWLEDGEMENT NUMBER', 'TOTAL INCOME', 'TOTAL TAX', 'TAXES PAID',
+      'TDS', 'ADVANCE TAX', 'SELF ASSESSMENT TAX', 'REFUNDABLE'
+    ],
     ITR_FULL: [
       'PART A-GEN', 'ACKNOWLEDGEMENT NUMBER', 'KEY PERSONS', 'DIRECTOR', 'AUDIT INFORMATION',
-      'PART A-BS', 'PART A-P&L', 'SCHEDULE BP', 'TOTAL INCOME', 'TAXES PAID'
+      'PART A-BS', 'PART A-P&L', 'SCHEDULE BP', 'SCHEDULE TDS', 'SCHEDULE IT',
+      'TOTAL INCOME', 'TAXES PAID'
     ],
     GSTR_1: ['FINANCIAL YEAR', 'TAX PERIOD', 'TOTAL LIABILITY', 'NIL RATED', 'CREDIT/DEBIT', 'AMENDMENT'],
     GSTR_1A: ['FINANCIAL YEAR', 'TAX PERIOD', 'GSTR-1A', 'TOTAL LIABILITY', 'CREDIT/DEBIT', 'AMENDMENT'],
     GSTR_3B: ['FINANCIAL YEAR', 'PERIOD', '3.1 DETAILS', 'ELIGIBLE ITC', 'INTEREST', 'TAX PAYMENT'],
-    AUDITED_FINANCIAL_STATEMENTS: ['BALANCE SHEET', 'PROFIT AND LOSS', 'NOTES', 'UDIN', 'AMOUNT IN']
+    AUDITED_FINANCIAL_STATEMENTS: ['BALANCE SHEET', 'PROFIT AND LOSS', 'NOTES', 'UDIN', 'AMOUNT IN'],
+    TDS_STATEMENT: ['FORM 26AS', 'ASSESSMENT YEAR', 'TAX DEDUCTED AT SOURCE', 'TAX COLLECTED AT SOURCE', 'CHALLAN', 'SELF ASSESSMENT TAX']
   };
 
   const ranges: Array<[number, number]> = [[0, 18_000]];
@@ -170,6 +188,9 @@ function promptFor(type: SupportedDocumentType, combinedGstr1 = false) {
       : '';
     return `${COMMON_RULES}\n${GST_RULES}${combinedRule}\nReturn every required field for ${type}. Tax vectors contain igst, cgst, sgst and cess.`;
   }
+  if (type === 'TDS_STATEMENT') {
+    return `${COMMON_RULES}\n${TDS_RULES}\nReturn every required field for TDS_STATEMENT. Use zero only where the source explicitly has no amount; otherwise preserve evidence and lower confidence.`;
+  }
   return `${COMMON_RULES}\n${FINANCIAL_RULES}\nReturn every required field for AUDITED_FINANCIAL_STATEMENTS.`;
 }
 
@@ -181,6 +202,7 @@ function schemaFor(type: SupportedDocumentType) {
     case 'GSTR_1A': return gstr1AExtractionSchema;
     case 'GSTR_3B': return gstr3BExtractionSchema;
     case 'AUDITED_FINANCIAL_STATEMENTS': return auditedFinancialStatementsExtractionSchema;
+    case 'TDS_STATEMENT': return tdsStatementExtractionSchema;
   }
 }
 
