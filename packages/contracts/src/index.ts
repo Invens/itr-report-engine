@@ -35,6 +35,23 @@ export const taxVectorSchema = z.object({
   cess: z.number().finite().default(0)
 });
 
+export const taxCreditSummarySchema = z.object({
+  tds: z.number().nonnegative().default(0),
+  tcs: z.number().nonnegative().default(0),
+  advanceTax: z.number().nonnegative().default(0),
+  selfAssessmentTax: z.number().nonnegative().default(0),
+  total: z.number().nonnegative().default(0)
+});
+
+export const taxChallanSchema = z.object({
+  type: z.enum(['ADVANCE_TAX', 'SELF_ASSESSMENT_TAX', 'OTHER']),
+  amount: z.number().nonnegative(),
+  depositDate: z.string().optional(),
+  bsrCode: z.string().optional(),
+  serialNumber: z.string().optional(),
+  sourcePage: z.number().int().positive().optional()
+});
+
 export const statementValueSchema = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
@@ -96,6 +113,13 @@ const itrBaseShape = {
   refundOrDemand: z.number().finite().optional(),
   originalAcknowledgementNumber: z.string().regex(/^\d{10,20}$/).optional(),
   originalFilingDate: z.string().min(8).optional(),
+  taxCredits: taxCreditSummarySchema.default({
+    tds: 0,
+    tcs: 0,
+    advanceTax: 0,
+    selfAssessmentTax: 0,
+    total: 0
+  }),
   relationships: z.array(relationshipSchema).default([]),
   auditRecords: z.array(auditRecordSchema).default([]),
   statementValues: z.array(statementValueSchema).default([]),
@@ -166,13 +190,27 @@ export const auditedFinancialStatementsExtractionSchema = z.object({
   provenance: provenanceSchema
 });
 
+export const tdsStatementExtractionSchema = z.object({
+  documentType: z.literal('TDS_STATEMENT'),
+  entityType: entityTypeSchema,
+  name: z.string().min(2),
+  pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/),
+  assessmentYear: z.string().regex(/^20\d{2}-\d{2}$/),
+  taxCredits: taxCreditSummarySchema,
+  challans: z.array(taxChallanSchema).default([]),
+  confidence: z.record(z.string(), scoreSchema).default({}),
+  evidence: evidenceSchema,
+  provenance: provenanceSchema
+});
+
 export const documentExtractionSchema = z.discriminatedUnion('documentType', [
   itrExtractionSchema,
   fullItrExtractionSchema,
   gstr1ExtractionSchema,
   gstr1AExtractionSchema,
   gstr3BExtractionSchema,
-  auditedFinancialStatementsExtractionSchema
+  auditedFinancialStatementsExtractionSchema,
+  tdsStatementExtractionSchema
 ]);
 
 export const reportRowSchema = z.object({
@@ -293,6 +331,7 @@ export type ItrExtraction = z.infer<typeof itrExtractionSchema>;
 export type FullItrExtraction = z.infer<typeof fullItrExtractionSchema>;
 export type GstReturnExtraction = z.infer<typeof gstr1ExtractionSchema | typeof gstr1AExtractionSchema | typeof gstr3BExtractionSchema>;
 export type AuditedFinancialStatementsExtraction = z.infer<typeof auditedFinancialStatementsExtractionSchema>;
+export type TdsStatementExtraction = z.infer<typeof tdsStatementExtractionSchema>;
 export type DocumentExtraction = z.infer<typeof documentExtractionSchema>;
 export type ReportRow = z.infer<typeof reportRowSchema>;
 export type IndividualReport = z.infer<typeof individualReportSchema>;
@@ -300,4 +339,5 @@ export type ConsolidatedReport = z.infer<typeof consolidatedReportSchema>;
 export type ReportTemplateConfig = z.infer<typeof reportTemplateConfigSchema>;
 export type ReportTemplateUpdate = z.infer<typeof reportTemplateUpdateSchema>;
 export type TaxVector = z.infer<typeof taxVectorSchema>;
+export type TaxCreditSummary = z.infer<typeof taxCreditSummarySchema>;
 export type StatementValue = z.infer<typeof statementValueSchema>;
