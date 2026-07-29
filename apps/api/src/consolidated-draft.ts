@@ -44,6 +44,7 @@ type AuditedSourceDocument = DraftSourceDocument & { extraction: AuditedExtracti
 
 type FinancialSection = StatementValue['section'];
 type FinancialComparisonRow = NonNullable<ConsolidatedReport['balanceSheet']>['rows'][number];
+type RelationshipStatus = ConsolidatedReport['itrSections'][number]['relationshipStatus'];
 
 function isItrDocument(item: DraftSourceDocument): item is ItrSourceDocument {
   return item.extraction.documentType === 'ITR_ACKNOWLEDGEMENT'
@@ -99,8 +100,9 @@ function toReportRow(value: ItrDocumentExtraction): ReportRow {
   };
 }
 
-function latestByArnDate<T extends { arnDate: string }>(values: T[]): T | undefined {
-  return [...values].sort((a, b) => b.arnDate.localeCompare(a.arnDate))[0];
+function latestByArnDate<T extends GstSourceDocument>(values: T[]): T | undefined {
+  return [...values]
+    .sort((a, b) => b.extraction.arnDate.localeCompare(a.extraction.arnDate))[0];
 }
 
 function taxVectorOrZero(value?: TaxVector): TaxVector {
@@ -188,6 +190,9 @@ export function buildConsolidatedDraft(
     const relation = verifiedRelationships.get(pan);
     const rows = selectLatestItrRows(items.map((item) => toReportRow(item.extraction)));
     const isCompany = pan === companyPan;
+    const relationshipStatus: RelationshipStatus = isCompany || relation
+      ? 'DOCUMENT_VERIFIED'
+      : 'UNVERIFIED';
 
     if (!isCompany && !relation) {
       issues.push({
@@ -204,7 +209,7 @@ export function buildConsolidatedDraft(
       pan,
       entityType: latest.entityType,
       din: relation?.din ?? latest.din,
-      relationshipStatus: isCompany || relation ? 'DOCUMENT_VERIFIED' : 'UNVERIFIED',
+      relationshipStatus,
       rows
     };
   }).sort((a, b) => {
