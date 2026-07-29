@@ -94,6 +94,8 @@ jobs:
       - name: Fail on API typecheck errors
         if: steps.api_typecheck.outcome == 'failure'
         run: exit 1
+      - name: Run API report-rule tests
+        run: pnpm --filter @itr/api test
       - name: Typecheck web
         run: pnpm --filter @itr/web typecheck
       - name: Build API
